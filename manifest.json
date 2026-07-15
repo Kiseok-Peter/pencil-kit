@@ -1,0 +1,12 @@
+{
+  "name": "Pencil to Figma Import",
+  "id": "pencil-to-figma-import",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "networkAccess": {
+    "allowedDomains": ["https://unpkg.com", "https://cdn.jsdelivr.net"],
+    "reasoning": "아이콘 SVG(lucide/feather/phosphor)를 CDN에서 가져오기 위함"
+  }
+}

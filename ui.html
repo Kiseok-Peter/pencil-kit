@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  body { font-family: Inter, -apple-system, sans-serif; margin: 0; padding: 16px; color: #1a1918; }
+  h3 { margin: 0 0 4px; font-size: 14px; }
+  h4 { margin: 0 0 6px; font-size: 12px; }
+  p { margin: 0 0 12px; font-size: 12px; color: #6d6c6a; line-height: 1.5; }
+  .drop { display: block; border: 1.5px dashed #c9c8c5; border-radius: 10px; padding: 18px; text-align: center; font-size: 12px; color: #6d6c6a; cursor: pointer; }
+  .drop:hover { border-color: #3d8a5a; color: #3d8a5a; }
+  input[type=file] { display: none; }
+  button { width: 100%; margin-top: 12px; padding: 10px; border: none; border-radius: 8px; background: #3d8a5a; color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
+  button:disabled { background: #c9c8c5; cursor: default; }
+  .sel { margin-top: 12px; border: 1px solid #e5e4e1; border-radius: 8px; padding: 10px; display: none; }
+  .srow { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; }
+  .srow .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .srow input.page, #collName { font-size: 11px; padding: 3px 6px; border: 1px solid #e5e4e1; border-radius: 5px; width: 140px; }
+  #screens { max-height: 170px; overflow: auto; margin-bottom: 8px; }
+  .prow { font-size: 11px; color: #6d6c6a; margin-top: 8px; display: flex; align-items: center; gap: 6px; }
+  .tool { font-size: 11px; color: #3d8a5a; cursor: pointer; user-select: none; }
+  .hint { font-size: 11px; color: #9c9b99; margin-top: 6px; line-height: 1.4; }
+  #log { margin-top: 12px; font-size: 11px; color: #6d6c6a; white-space: pre-wrap; max-height: 180px; overflow: auto; font-family: ui-monospace, Menlo, monospace; line-height: 1.4; }
+  .err { color: #d08068; }
+</style>
+</head>
+<body>
+  <h3>Pencil → Figma Import</h3>
+  <p><b>design-data.json</b> 을 선택하고, 가져올 화면과 들어갈 Figma 페이지를 지정하세요.</p>
+  <label class="drop" id="drop">클릭해서 design-data.json 선택<input type="file" id="file" accept=".json,application/json" /></label>
+
+  <div class="sel" id="sel">
+    <h4>가져올 화면 <span class="tool" id="toggleAll">전체 선택/해제</span></h4>
+    <div id="screens"></div>
+    <div class="prow">화면 프리셋: <span class="tool" id="presetOne">한 페이지로</span> · <span class="tool" id="presetEach">화면별 페이지</span></div>
+
+    <h4 style="margin-top:14px">컴포넌트 페이지</h4>
+    <div id="components"></div>
+    <div class="prow">컴포넌트 프리셋: <span class="tool" id="cPresetOne">한 페이지로</span> · <span class="tool" id="cPresetPrefix">이름 접두사(/ 앞)로 분리</span></div>
+
+    <div class="prow">변수 컬렉션: <input id="collName" type="text" value="Pencil Tokens" /></div>
+    <div class="prow" id="themeRow" style="display:none">테마(기본 모드): <select id="theme"></select></div>
+    <div class="hint">각 행 오른쪽 칸 = 들어갈 Figma 페이지 이름. 같은 이름이면 한 페이지에 모이고, 기존 페이지면 거기에 추가됩니다. 컴포넌트 칸을 비우면 첫 화면 페이지에 함께 둡니다. (선택한 화면이 실제로 쓰는 컴포넌트만 생성됩니다)</div>
+  </div>
+
+  <button id="go" disabled>가져오기</button>
+  <div id="log"></div>
+
+<script>
+  let DATA = null;
+  const $log = document.getElementById("log");
+  const $go = document.getElementById("go");
+  const $sel = document.getElementById("sel");
+  const $screens = document.getElementById("screens");
+  const $components = document.getElementById("components");
+  const DEFAULT_PAGE = "📱 Screens";
+  const DEFAULT_COMP_PAGE = "🧩 Components";
+  let compById = {};               // id -> 컴포넌트 spec
+  const compPageState = {};        // id -> 입력한 페이지 이름 (재렌더 시 유지)
+  function log(msg, err) { $log.innerHTML += '<div class="' + (err ? 'err' : '') + '">' + msg + '</div>'; $log.scrollTop = $log.scrollHeight; }
+
+  // input 이 label 안에 있어 클릭은 브라우저가 자동 위임 (수동 .click() 호출 금지 → 중복 방지)
+  document.getElementById("file").onchange = (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        DATA = JSON.parse(r.result);
+        const screens = DATA.screens || [];
+        log("로드됨: 컴포넌트 " + (DATA.components || []).length + ", 화면 " + screens.length + ", 아이콘 " + (DATA.icons || []).length + ", 이미지 " + Object.keys(DATA.images || {}).length);
+        compById = {};
+        (DATA.components || []).forEach((c) => { compById[c.id] = c; });
+        renderScreens(screens);
+        refreshComponents();
+        populateThemes();
+        $go.disabled = false;
+      } catch (err) { log("JSON 파싱 실패: " + err.message, true); }
+    };
+    r.readAsText(f);
+  };
+
+  function renderScreens(screens) {
+    $screens.innerHTML = "";
+    screens.forEach((s, i) => {
+      const name = s.name || s.id || ("화면 " + (i + 1));
+      const row = document.createElement("div");
+      row.className = "srow";
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.checked = true; cb.value = i;
+      cb.onchange = refreshComponents;
+      const nm = document.createElement("span");
+      nm.className = "nm"; nm.textContent = name; nm.title = name;
+      const page = document.createElement("input");
+      page.type = "text"; page.className = "page"; page.value = DEFAULT_PAGE; page.dataset.name = name;
+      row.appendChild(cb); row.appendChild(nm); row.appendChild(page);
+      $screens.appendChild(row);
+    });
+    $sel.style.display = screens.length ? "block" : "none";
+  }
+
+  document.getElementById("toggleAll").onclick = () => {
+    const boxes = $screens.querySelectorAll("input[type=checkbox]");
+    const anyUnchecked = Array.prototype.some.call(boxes, (b) => !b.checked);
+    boxes.forEach((b) => { b.checked = anyUnchecked; });
+    refreshComponents();
+  };
+  document.getElementById("presetOne").onclick = () => {
+    $screens.querySelectorAll("input.page").forEach((p) => { p.value = DEFAULT_PAGE; });
+  };
+  document.getElementById("presetEach").onclick = () => {
+    $screens.querySelectorAll("input.page").forEach((p) => { p.value = p.dataset.name; });
+  };
+
+  // ref(인스턴스) 수집 — code.js 와 동일 로직
+  function collectRefs(spec, out) {
+    if (!spec || typeof spec !== "object") return;
+    if (spec.type === "ref" && spec.ref) out.add(spec.ref);
+    (spec.children || []).forEach((c) => collectRefs(c, out));
+  }
+  // 체크된 화면이 (전이적으로) 쓰는 컴포넌트 id 집합
+  function neededComponentIds() {
+    const need = new Set();
+    const stack = [];
+    $screens.querySelectorAll("input[type=checkbox]:checked").forEach((cb) => {
+      const s = (DATA.screens || [])[parseInt(cb.value, 10)];
+      const seed = new Set(); collectRefs(s, seed);
+      seed.forEach((id) => stack.push(id));
+    });
+    while (stack.length) {
+      const id = stack.pop();
+      if (!compById[id] || need.has(id)) continue;
+      need.add(id);
+      const inner = new Set(); collectRefs(compById[id], inner);
+      inner.forEach((x) => { if (!need.has(x)) stack.push(x); });
+    }
+    return need;
+  }
+  // 선택된 화면이 쓰는 컴포넌트만 표시 (입력값은 compPageState 로 유지)
+  function refreshComponents() {
+    const need = neededComponentIds();
+    $components.innerHTML = "";
+    if (!need.size) {
+      const d = document.createElement("div");
+      d.className = "hint"; d.textContent = "선택된 화면이 사용하는 컴포넌트가 없습니다.";
+      $components.appendChild(d);
+      return;
+    }
+    need.forEach((id) => {
+      const c = compById[id]; if (!c) return;
+      const name = c.name || c.id;
+      const row = document.createElement("div"); row.className = "srow";
+      const nm = document.createElement("span"); nm.className = "nm"; nm.textContent = name; nm.title = name;
+      const page = document.createElement("input");
+      page.type = "text"; page.className = "page";
+      page.value = compPageState[id] != null ? compPageState[id] : DEFAULT_COMP_PAGE;
+      page.dataset.id = id; page.dataset.name = name;
+      page.oninput = () => { compPageState[id] = page.value; };
+      row.appendChild(nm); row.appendChild(page);
+      $components.appendChild(row);
+    });
+  }
+
+  document.getElementById("cPresetOne").onclick = () => {
+    $components.querySelectorAll("input.page").forEach((p) => { p.value = DEFAULT_COMP_PAGE; compPageState[p.dataset.id] = DEFAULT_COMP_PAGE; });
+  };
+  document.getElementById("cPresetPrefix").onclick = () => {
+    $components.querySelectorAll("input.page").forEach((p) => {
+      const n = p.dataset.name || "";
+      const v = n.indexOf("/") >= 0 ? n.split("/")[0].trim() : DEFAULT_COMP_PAGE;
+      p.value = v; compPageState[p.dataset.id] = v;
+    });
+  };
+
+  // Pencil 이 정의한 테마(예: light/dark)를 드롭다운에 채움. 선택한 테마가 Figma 기본 모드.
+  function populateThemes() {
+    const sel = document.getElementById("theme");
+    const row = document.getElementById("themeRow");
+    sel.innerHTML = "";
+    const themes = (DATA.variables && DATA.variables.themes) || null;
+    const axis = themes ? Object.keys(themes)[0] : null;
+    const vals = axis ? (themes[axis] || []) : [];
+    vals.forEach((v) => { const o = document.createElement("option"); o.value = v; o.textContent = v; sel.appendChild(o); });
+    row.style.display = vals.length > 1 ? "flex" : "none";
+  }
+
+  // 라이브러리별 CDN 후보 (앞에서부터 시도: unpkg → jsdelivr)
+  var CDN = {
+    lucide: [
+      function (n) { return "https://unpkg.com/lucide-static@latest/icons/" + n + ".svg"; },
+      function (n) { return "https://cdn.jsdelivr.net/npm/lucide-static@latest/icons/" + n + ".svg"; }
+    ],
+    feather: [
+      function (n) { return "https://unpkg.com/feather-icons@latest/dist/icons/" + n + ".svg"; },
+      function (n) { return "https://cdn.jsdelivr.net/npm/feather-icons@latest/dist/icons/" + n + ".svg"; }
+    ],
+    phosphor: [
+      function (n) { return "https://unpkg.com/@phosphor-icons/core@latest/assets/regular/" + n + ".svg"; },
+      function (n) { return "https://cdn.jsdelivr.net/npm/@phosphor-icons/core@latest/assets/regular/" + n + ".svg"; }
+    ]
+  };
+  async function fetchOne(urls) {
+    // 각 URL 을 순서대로, 각 1회 재시도까지 시도
+    for (const url of urls) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const res = await fetch(url);
+          if (res.ok) return await res.text();
+        } catch (e) { /* 다음 시도 */ }
+      }
+    }
+    return null;
+  }
+  async function fetchIcons(list) {
+    const out = {};
+    const failed = [];
+    for (const it of list) {
+      const lib = (typeof it === "string") ? "lucide" : (it.library || "lucide");
+      const name = (typeof it === "string") ? it : it.icon;
+      const key = lib + "/" + name;
+      const makers = CDN[lib];
+      if (!makers) { log("미지원 아이콘 라이브러리: " + lib + " (" + name + ")", true); continue; }
+      const svg = await fetchOne(makers.map((m) => m(name)));
+      if (svg) out[key] = svg; else failed.push(key);
+    }
+    if (failed.length) log("아이콘 못 받음(" + failed.length + "): " + failed.join(", "), true);
+    return out;
+  }
+
+  $go.onclick = async () => {
+    if (!DATA) return;
+    const rows = $screens.querySelectorAll(".srow");
+    const selected = [], pageMap = {};
+    rows.forEach((row) => {
+      const cb = row.querySelector("input[type=checkbox]");
+      if (!cb.checked) return;
+      const i = parseInt(cb.value, 10);
+      selected.push(i);
+      const pv = (row.querySelector("input.page").value || "").trim();
+      pageMap[i] = pv || DEFAULT_PAGE;
+    });
+    if (!selected.length) log("화면 0개 선택 — 변수만 생성합니다.");
+    const compPageMap = {};
+    $components.querySelectorAll("input.page").forEach((p) => {
+      compPageMap[p.dataset.id] = (p.value || "").trim();
+    });
+    $go.disabled = true;
+    log("선택 화면 " + selected.length + "개. 아이콘 " + (DATA.icons || []).length + "개 다운로드...");
+    const icons = await fetchIcons(DATA.icons || []);
+    log("아이콘 " + Object.keys(icons).length + "개 확보. 플러그인에 전달...");
+    const themeSel = document.getElementById("theme");
+    const theme = (themeSel && themeSel.value) || null;
+    const collectionName = (document.getElementById("collName").value || "").trim() || "Pencil Tokens";
+    parent.postMessage({ pluginMessage: { type: "import", data: DATA, icons: icons, selected: selected, pageMap: pageMap, compPageMap: compPageMap, theme: theme, collectionName: collectionName } }, "*");
+  };
+
+  onmessage = (e) => {
+    const msg = e.data.pluginMessage;
+    if (!msg) return;
+    if (msg.type === "progress") log(msg.text);
+    else if (msg.type === "debug") log(msg.text);
+    else if (msg.type === "done") { log("완료 ✓"); $go.disabled = false; }
+    else if (msg.type === "error") { log("에러: " + msg.text, true); $go.disabled = false; }
+  };
+</script>
+</body>
+</html>

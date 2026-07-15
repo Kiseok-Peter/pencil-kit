@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+
+# 런처 로컬 상태(마지막 데이터 폴더 경로 — 머신마다 다름)
+.launcher_last
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 프로젝트 데이터(키트는 데이터를 포함하지 않음 — 각 <프로젝트>/export/ 에 둘 것)
+# 실수로 kit 폴더 안에 데이터를 두더라도 커밋되지 않도록 방어
+pen-nodes.json
+variables.json
+design-data.json
+swiftui-input.json
+_icon_ids.json
+_link_*.json
+_screen_ids.json
+.snapshot/
