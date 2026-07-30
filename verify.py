@@ -41,6 +41,12 @@ TOKEN_BUCKETS = {"radius", "spacing", "fontsize", "fontweight", "lineheight", "t
 # 변수 참조 판별: $ 뒤 소문자 시작 kebab (텍스트 내용의 "$5" 같은 값 오인 방지)
 _VAR_RE = re.compile(r"^\$[a-z][a-z0-9-]*$")
 
+# 타이포 커버리지 집계에서 제외할 최상위 프레임 접두 — 디자인시스템 카탈로그(쇼케이스)는
+# 코드 생성 대상이 아니고 문서 전용 크기(9px 아이콘 라벨 등)를 써서 스케일을 오염시킨다.
+# 재사용 컴포넌트는 카탈로그 안에 물리적으로 들어있지만 최상위에 reusable 로도 등재되므로,
+# 카탈로그를 건너뛰어도 정확히 1회 계상된다(= 중복 계상 해소).
+DOC_PREFIX = "DS - "
+
 def load(name):
     with open(os.path.join(DATA, name), encoding="utf-8") as f:
         return json.load(f)
@@ -112,6 +118,11 @@ def main():
                 elif key == "fontWeight":
                     weight_dist[str(v)] = weight_dist.get(str(v), 0) + 1
 
+    def typo_scope(n):
+        """타이포 커버리지 대상 최상위 노드인가 (컴포넌트 + 제품 화면, 카탈로그 제외)"""
+        return bool(n.get("reusable")) or not str(n.get("name") or "").startswith(DOC_PREFIX)
+
+    # 무결성 검사 — 카탈로그 포함 전체 범위
     def check(n):
         if n.get("type") == "ref":
             r = n.get("ref")
@@ -121,15 +132,23 @@ def main():
             lib = n.get("library") or "lucide"
             if isinstance(lib, str) and lib not in SUPPORTED_ICON_LIBS:
                 bad_icons[lib] = bad_icons.get(lib, 0) + 1
+        for k, v in n.items():
+            if k not in ("children", "descendants", "content"):
+                collect_var_refs(v, var_refs)
+    walk(nodes, check)
+
+    # 타이포 집계 — 대상 범위만 (컴포넌트 + 제품 화면)
+    def typo_check(n):
         if n.get("type") == "text":
             text_total[0] += 1
             tally_typo(n, is_override=False)
         elif "type" not in n and any(k in n for k in TYPO_STR_KEYS + TYPO_NUM_KEYS):
             tally_typo(n, is_override=True)   # descendants 오버라이드 객체 (type 없음 = 속성 오버라이드)
-        for k, v in n.items():
-            if k not in ("children", "descendants", "content"):
-                collect_var_refs(v, var_refs)
-    walk(nodes, check)
+    scope_n = 0
+    for n in nodes:
+        if isinstance(n, dict) and typo_scope(n):
+            scope_n += 1
+            walk(n, typo_check)
 
     trunc = json.dumps(nodes, ensure_ascii=False).count('"..."')
     undefined_vars = sorted(v for v in var_refs if v not in variables)
@@ -137,7 +156,8 @@ def main():
                           if v in variables and var_types.get(v) != "color"
                           and v.partition("-")[0] not in TOKEN_BUCKETS})
 
-    print(f"검증 대상: 컴포넌트 {comps} · 화면 {screens} · 변수 {len(variables)} · 텍스트 {text_total[0]} (@ {DATA})")
+    print(f"검증 대상: 컴포넌트 {comps} · 화면 {screens} · 변수 {len(variables)} (@ {DATA})")
+    print(f"  타이포 집계 범위: 최상위 {scope_n}개(카탈로그 '{DOC_PREFIX}*' 제외) · 텍스트 {text_total[0]}개")
     issues = 0
     warns = 0
     def line(ok, msg):
