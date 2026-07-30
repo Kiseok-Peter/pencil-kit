@@ -58,6 +58,7 @@ cd pencil-kit && python3 launcher.py
 | `merge-nodes.py` | 부분 추출 결과(part)를 id 기준 병합 — 증분 추출 지원 | 공통 |
 | `verify.py` | export 데이터 무결성 검증(ref·절단·아이콘·변수·타이포) | 공통 |
 | `diff.py` | 지난 스냅샷 대비 변경(컴포넌트/화면/토큰 +~-) 감지 | 공통 |
+| `PENCIL-MCP-NOTES.md` | `.pen` 편집 시 MCP 함정 모음(실측) | 공통 |
 | `manifest.json` `code.js` `ui.html` | Figma 플러그인 본체 | Figma |
 | `RUNBOOK.md` | Figma 변환 절차(추출→빌드→임포트) | Figma |
 | `extract-for-swiftui.py` | design-data → 경량 `swiftui-input.json`(화면 선택) | SwiftUI |
