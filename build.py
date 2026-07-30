@@ -64,9 +64,14 @@ def collect(nodes):
 # 현행 절차(RUNBOOK)는 resolveVariables:false 필수 — 이 경우 이 맵은 사실상 no-op.
 # ※ 색만 복구 가능. number/string(타이포·spacing) 토큰은 역복원 경로가 없다.
 def build_color_map(variables_full):
-    """light hex(대문자) -> 변수명. 전체형식 {themes,variables} / 평탄형식 {name:hex} 모두 지원."""
+    """light hex(대문자) -> 변수명. 전체형식 {themes,variables} / 평탄형식 {name:hex} 모두 지원.
+
+    같은 light hex 를 여러 토큰이 가질 때(예: #FFFFFF = background(테마별) / text-on-primary(고정))
+    **테마 없는(스칼라) 토큰을 우선**한다. 디자인에 생 hex 로 박혀 있던 색은 정의상 테마 불변이므로,
+    테마별 토큰으로 역복원하면 다크모드에서 색이 뒤집힌다(흰 아이콘이 검게 변하는 등).
+    """
     defs = variables_full.get("variables", variables_full) if isinstance(variables_full, dict) else {}
-    m = {}
+    cands = {}   # HEX -> [(name, themed)]
     for name, defn in defs.items():
         if isinstance(defn, dict):
             if defn.get("type") != "color":
@@ -74,8 +79,9 @@ def build_color_map(variables_full):
             val = defn.get("value")
         else:
             val = defn
-        hexv = None
+        hexv, themed = None, False
         if isinstance(val, list):
+            themed = True
             for e in val:
                 if isinstance(e, dict) and (e.get("theme") or {}).get("mode") == "light":
                     hexv = e.get("value"); break
@@ -84,7 +90,14 @@ def build_color_map(variables_full):
         elif isinstance(val, str):
             hexv = val
         if isinstance(hexv, str) and hexv.startswith("#"):
-            m[hexv.upper()] = name
+            cands.setdefault(hexv.upper(), []).append((name, themed))
+    m = {}
+    for hexv, lst in cands.items():
+        scalars = [n for n, t in lst if not t]
+        m[hexv] = scalars[0] if scalars else lst[0][0]
+        if len(lst) > 1:
+            print(f"  [알림] {hexv} 를 {len(lst)}개 토큰이 공유 → '{m[hexv]}' 채택"
+                  f" ({'테마 없음 우선' if scalars else '테마별 중 첫 항목'}; 후보 {[n for n, _ in lst]})")
     return m
 
 _remap_count = [0]
