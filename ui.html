@@ -40,6 +40,8 @@
 
     <div class="prow">변수 컬렉션: <input id="collName" type="text" value="Pencil Tokens" /></div>
     <div class="prow" id="themeRow" style="display:none">테마(기본 모드): <select id="theme"></select></div>
+    <div class="prow"><label><input id="bindTokens" type="checkbox" checked /> 토큰 바인딩(타이포·모서리를 Figma 변수로 연결)</label></div>
+    <div class="hint">끄면 색 변수만 만들고 나머지는 값으로 넣습니다(이전 동작). 바인딩이 문제를 일으킬 때만 끄세요.</div>
     <div class="hint">각 행 오른쪽 칸 = 들어갈 Figma 페이지 이름. 같은 이름이면 한 페이지에 모이고, 기존 페이지면 거기에 추가됩니다. 컴포넌트 칸을 비우면 첫 화면 페이지에 함께 둡니다. (선택한 화면이 실제로 쓰는 컴포넌트만 생성됩니다)</div>
   </div>
 
@@ -251,7 +253,9 @@
     const themeSel = document.getElementById("theme");
     const theme = (themeSel && themeSel.value) || null;
     const collectionName = (document.getElementById("collName").value || "").trim() || "Pencil Tokens";
-    parent.postMessage({ pluginMessage: { type: "import", data: DATA, icons: icons, selected: selected, pageMap: pageMap, compPageMap: compPageMap, theme: theme, collectionName: collectionName } }, "*");
+    const bindEl = document.getElementById("bindTokens");
+    const opts = { bindTokens: bindEl ? !!bindEl.checked : true };
+    parent.postMessage({ pluginMessage: { type: "import", data: DATA, icons: icons, selected: selected, pageMap: pageMap, compPageMap: compPageMap, theme: theme, collectionName: collectionName, opts: opts } }, "*");
   };
 
   onmessage = (e) => {

@@ -5,14 +5,29 @@
 figma.showUI(__html__, { width: 440, height: 520 });
 
 // ---- 전역 상태 ----
-const VARS = {};            // 변수명 -> Figma Variable
-const IMAGE_HASHES = {};    // url -> imageHash
-const COMP_MAP = {};        // pencil 컴포넌트 id -> ComponentNode
-const COMP_PATHS = {};      // pencil 컴포넌트 id -> { 자식 pencilId: [인덱스경로] }
-const COMP_SPEC = {};       // pencil 컴포넌트 id -> 컴포넌트 spec (치수 상속용)
+// 전부 let: importDesign 진입 시 resetState() 로 재초기화한다(세션 내 재실행 안전).
+let VARS = {};              // 변수명 -> Figma Variable (COLOR 전용)
+let VAR_OBJ = {};           // 변수명 -> Figma Variable (FLOAT/STRING). 색과 분리 — makeSolidPaint 가 VARS 를 무조건 색으로 쓴다
+let IMAGE_HASHES = {};      // url -> imageHash
+let COMP_MAP = {};          // pencil 컴포넌트 id -> ComponentNode
+let COMP_PATHS = {};        // pencil 컴포넌트 id -> { 자식 pencilId: [인덱스경로] }
+let COMP_SPEC = {};         // pencil 컴포넌트 id -> 컴포넌트 spec (치수 상속용)
 let ICONS = {};             // 아이콘명 -> SVG 문자열
-const DBG = [];             // 진단 로그
+let DBG = [];               // 진단 로그
 let ROOT_FILL_OVR = 0;      // ref 루트 fill 오버라이드 적용 횟수 (코드 반영 확인용)
+let LOADED = new Set();     // 실제 로드에 성공한 "family||style" (동기 경로에서 폰트 교체 가능 여부 판단)
+let OPT = { bindTokens: true };  // 실행 옵션 (ui.html)
+
+// 재실행 시 전역이 남아 있으면 사고가 난다. 특히 COMP_MAP 이 남으면 buildOneComponent(가 조기 반환해)
+// 지난 실행의 컴포넌트를 재사용하고, 사용자가 그걸 지웠으면 createInstance 가 예외를 던진다.
+function resetState() {
+  VARS = {}; VAR_OBJ = {};
+  VAR_HEX = {}; VAR_NUM = {}; VAR_STR = {};
+  IMAGE_HASHES = {}; COMP_MAP = {}; COMP_PATHS = {}; COMP_SPEC = {};
+  DBG = []; ROOT_FILL_OVR = 0;
+  LOADED = new Set(); FONT_RESOLVED = {};
+  BIND_STAT = {}; CAP = {};
+}
 
 function dumpTree(node, depth, out) {
   const pad = "  ".repeat(depth);
@@ -44,7 +59,7 @@ const STYLE_CANDIDATES = {
 
 let AVAILABLE = new Set();      // "family||style"
 let ANY_FONT = { family: "Roboto", style: "Regular" };
-const FONT_RESOLVED = {};       // "family|weight|italic" -> {family, style} (로드 보장됨)
+let FONT_RESOLVED = {};         // "family|weight|italic" -> {family, style} (로드 보장됨)
 
 async function buildFontIndex() {
   AVAILABLE = new Set();
@@ -123,6 +138,13 @@ let VAR_HEX = {};
 let VAR_NUM = {};
 let VAR_STR = {};
 
+// 토큰 이름 규약 (verify.py 의 TOKEN_BUCKETS 와 같은 계약)
+// fontweight-* 는 Pencil 에서 string("600") 이지만 Figma 는 fontWeight 에 number 변수를 요구한다 → FLOAT 로 변환 생성.
+const WEIGHT_RE = /^fontweight[-.]/i;
+// lineheight-* 는 배수(1.5). Figma 는 lineHeight 에 변수를 걸면 단위를 PIXELS 로 강제해 1.5px 이 되므로
+// 변수는 만들되 절대 바인딩하지 않는다 (BINDABLE 화이트리스트에 lineHeight 없음).
+const LINEHEIGHT_RE = /^lineheight[-.]/i;
+
 function resolveColorRGBA(ref) {
   let hex = ref;
   if (typeof ref === "string" && ref[0] === "$") hex = VAR_HEX[ref.slice(1)] || "#000000";
@@ -194,14 +216,17 @@ function setStroke(node, spec) {
     node.strokeAlign = { inner: "INSIDE", center: "CENTER", outer: "OUTSIDE" }[spec.strokeAlignment] || "INSIDE";
   }
   if (typeof sw === "number") {
-    try { node.strokeWeight = sw; } catch (e) {}
+    try { node.strokeWeight = sw; bindField(node, "strokeWeight", spec.strokeWidth, "FLOAT", sw); } catch (e) {}
   } else if (perSide) {
     if ("strokeTopWeight" in node) {
       // 면별 두께 (예: 하단 밑줄 {bottom:2}, 상단 구분선 {top:1})
-      try { node.strokeTopWeight = resolveNum(sw.top) || 0; } catch (e) {}
-      try { node.strokeRightWeight = resolveNum(sw.right) || 0; } catch (e) {}
-      try { node.strokeBottomWeight = resolveNum(sw.bottom) || 0; } catch (e) {}
-      try { node.strokeLeftWeight = resolveNum(sw.left) || 0; } catch (e) {}
+      const SIDE_FIELDS = { top: "strokeTopWeight", right: "strokeRightWeight", bottom: "strokeBottomWeight", left: "strokeLeftWeight" };
+      for (const side in SIDE_FIELDS) {
+        const rv = resolveNum(sw[side]);
+        const num = typeof rv === "number" ? rv : 0;   // 미해석 "$..." 를 대입하면 예외
+        try { node[SIDE_FIELDS[side]] = num; } catch (e) { continue; }
+        bindField(node, SIDE_FIELDS[side], sw[side], "FLOAT", num);
+      }
     } else {
       const vals = Object.keys(sw).map((k) => sw[k]).filter((v) => typeof v === "number");
       if (vals.length) { try { node.strokeWeight = Math.max.apply(null, vals); } catch (e) {} }
@@ -212,14 +237,19 @@ function setStroke(node, spec) {
 }
 
 // ---- 패딩 정규화 ----
+const PADDING_FIELDS = ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"];
 function setPadding(node, p) {
   const rv = (x) => { const v = resolveNum(x); return typeof v === "number" ? v : 0; };
-  let t = 0, r = 0, b = 0, l = 0;
+  let vals = [0, 0, 0, 0];          // [상, 우, 하, 좌]
+  let refs = [null, null, null, null];   // 같은 순서의 원시 spec ($ref 보존)
   if (Array.isArray(p)) {
-    if (p.length === 2) { t = b = rv(p[0]); r = l = rv(p[1]); }
-    else if (p.length === 4) { t = rv(p[0]); r = rv(p[1]); b = rv(p[2]); l = rv(p[3]); }
-  } else if (p != null) { t = r = b = l = rv(p); }
-  node.paddingTop = t; node.paddingRight = r; node.paddingBottom = b; node.paddingLeft = l;
+    if (p.length === 2) { vals = [rv(p[0]), rv(p[1]), rv(p[0]), rv(p[1])]; refs = [p[0], p[1], p[0], p[1]]; }
+    else if (p.length === 4) { vals = p.slice(0, 4).map(rv); refs = p.slice(0, 4); }
+  } else if (p != null) { const v = rv(p); vals = [v, v, v, v]; refs = [p, p, p, p]; }
+  for (let i = 0; i < 4; i++) {
+    node[PADDING_FIELDS[i]] = vals[i];
+    bindField(node, PADDING_FIELDS[i], refs[i], "FLOAT", vals[i]);
+  }
 }
 
 const ALIGN_PRIMARY = { start: "MIN", center: "CENTER", end: "MAX", space_between: "SPACE_BETWEEN", space_around: "SPACE_BETWEEN" };
@@ -232,7 +262,7 @@ function setEffects(node, eff) {
   const out = [];
   for (const e of arr) {
     if (e.type === "shadow") {
-      const c = hexToRGBA(e.color || "#00000040");
+      const c = resolveColorRGBA(e.color || "#00000040");   // "$변수" 도 해석 (hexToRGBA 만 쓰면 NaN)
       out.push({
         type: e.shadowType === "inner" ? "INNER_SHADOW" : "DROP_SHADOW",
         color: { r: c.r, g: c.g, b: c.b, a: c.a },
@@ -252,13 +282,23 @@ function setEffects(node, eff) {
 }
 
 // ---- 모서리 ----
+const CORNER_FIELDS = ["topLeftRadius", "topRightRadius", "bottomRightRadius", "bottomLeftRadius"];
 function setCorner(node, cr) {
   if (cr == null) return;
-  cr = resolveNum(cr);
-  if (typeof cr === "number") { node.cornerRadius = cr; return; }
-  if (Array.isArray(cr)) {
-    node.topLeftRadius = resolveNum(cr[0]); node.topRightRadius = resolveNum(cr[1]);
-    node.bottomRightRadius = resolveNum(cr[2]); node.bottomLeftRadius = resolveNum(cr[3]);
+  const raw = cr;                    // $ref 원본 보존 — 바인딩에 필요
+  const val = resolveNum(cr);
+  if (typeof val === "number") {
+    node.cornerRadius = val;
+    bindField(node, "cornerRadius", raw, "FLOAT", val);
+    return;
+  }
+  if (Array.isArray(raw)) {
+    for (let i = 0; i < 4 && i < raw.length; i++) {
+      const v = resolveNum(raw[i]);
+      if (typeof v !== "number") continue;   // 미해석 "$..." 대입은 예외 → 노드 통째 실패
+      node[CORNER_FIELDS[i]] = v;
+      bindField(node, CORNER_FIELDS[i], raw[i], "FLOAT", v);
+    }
   }
 }
 
@@ -419,16 +459,65 @@ function buildText(spec) {
   if (g === "auto") t.textAutoResize = "WIDTH_AND_HEIGHT";
   else if (g === "fixed-width") t.textAutoResize = "HEIGHT";
   else t.textAutoResize = "NONE";
-  if (spec.fill) t.fills = [makePaint(spec.fill)]; else t.fills = [];
+  if (spec.fill) t.fills = makePaints(spec.fill) || []; else t.fills = [];
+  bindTypography(t, spec, fnt);   // ★ 리터럴이 전부 확정된 뒤에만
   return t;
 }
+
+// 리터럴이 완성된 뒤에만 호출한다. 모든 실패는 언바인딩 → 리터럴 유지 → 시각 회귀 0.
+function bindTypography(t, spec, fnt) {
+  if (!OPT.bindTokens) return;
+  if (typeof resolveNum(spec.fontSize) === "number")
+    bindField(t, "fontSize", spec.fontSize, "FLOAT", t.fontSize);
+  const lsv = resolveNum(spec.letterSpacing);
+  if (typeof lsv === "number") {
+    // 단위까지 함께 확인한다 (Figma 는 변수를 걸면 단위를 PIXELS 로 강제 — Pencil 도 px 라 일치)
+    bindField(t, "letterSpacing", spec.letterSpacing, "FLOAT", lsKey(t), lsKey, (n) => { n.letterSpacing = { value: lsv, unit: "PIXELS" }; });
+  }
+  // lineHeight: Pencil 은 배수(1.5), Figma 는 바인딩 시 PIXELS 강제 → 1.5px 이 된다. 원리적으로 불가하므로 집계만.
+  if (typeof spec.lineHeight === "string" && spec.lineHeight[0] === "$") stat("lineHeight", "skip");
+  bindFontFamily(t, spec.fontFamily, fnt);
+  bindFontWeight(t, spec.fontWeight, fnt);
+}
+
+// fontFamily 는 **토큰 값과 실제 해석된 패밀리가 같을 때만** 건다.
+// resolveFont 는 Outfit 이 없으면 조용히 Inter 로 대체하는데, 그 상태에서 "$font-body"(="Outfit")를 걸면
+// 텍스트 수백 개가 한꺼번에 missing font 가 된다.
+function bindFontFamily(node, ref, fnt) {
+  if (typeof ref !== "string" || ref[0] !== "$") return;
+  const raw = VAR_STR[ref.slice(1)];
+  if (raw == null || String(raw) !== fnt.family) {
+    stat("fontFamily", "skip", "미설치 폴백: " + raw + " → " + fnt.family);
+    return;
+  }
+  // 리드백은 fontName **전체**로 한다. 패밀리만 보면, 바인딩이 패밀리는 맞추고 스타일을 바꿔버리는 경우를
+  // 통과시켜 굵기·이탤릭이 조용히 어긋난다 (Figma 는 새 패밀리에 현재 스타일이 없으면 다른 걸 고른다).
+  bindField(node, "fontFamily", ref, "STRING", fontKey(fnt), fontKeyOf, (n) => { n.fontName = fnt; });
+}
+
+// fontWeight 는 Pencil string("600") → Figma FLOAT(600). fontName 은 이미 리터럴로 정확하므로
+// Figma 가 이 필드를 무시해도 시각은 그대로다. 리드백은 style 이 **의도와 달라지지 않았음**을 확인한다.
+function bindFontWeight(node, ref, fnt) {
+  if (typeof ref !== "string" || ref[0] !== "$") return;
+  // 이탤릭은 숫자 굵기 변수로 표현할 수 없다 — Figma 가 weight 로 스타일을 다시 고르면 이탤릭이 날아간다
+  if (/italic/i.test(fnt.style)) { stat("fontWeight", "skip", "이탤릭은 숫자 굵기로 표현 불가: " + fnt.style); return; }
+  bindField(node, "fontWeight", ref, "FLOAT", fontKey(fnt), fontKeyOf, (n) => { n.fontName = fnt; });
+}
+
+function fontKey(f) { return f ? f.family + "||" + f.style : null; }
+function fontKeyOf(n) { return n.fontName && n.fontName !== figma.mixed ? fontKey(n.fontName) : null; }
+function lsKey(n) { return n.letterSpacing ? n.letterSpacing.unit + ":" + n.letterSpacing.value : null; }
 
 // ---- 프레임 빌드 ----
 function buildFrame(spec) {
   const f = figma.createFrame();
   f.layoutMode = spec.layout === "vertical" ? "VERTICAL" : spec.layout === "none" ? "NONE" : "HORIZONTAL";
   if (f.layoutMode !== "NONE") {
-    f.itemSpacing = resolveNum(spec.gap) || 0;
+    // 가드 필수: resolveNum 이 미해석 "$spacing-md" 를 그대로 돌려주면 truthy 라 문자열이 대입되고,
+    // 예외 → 부모의 catch → 프레임과 subtree 가 통째로 사라진다 (setPadding 은 이미 가드가 있었다)
+    const gap = resolveNum(spec.gap);
+    f.itemSpacing = typeof gap === "number" ? gap : 0;
+    bindField(f, "itemSpacing", spec.gap, "FLOAT", f.itemSpacing);
     setPadding(f, spec.padding);
     f.primaryAxisAlignItems = ALIGN_PRIMARY[spec.justifyContent || "start"] || "MIN";
     f.counterAxisAlignItems = ALIGN_CROSS[spec.alignItems || "start"] || "MIN";
@@ -484,9 +573,68 @@ function applyOverride(node, ov) {
     else if ("fills" in node) node.fills = makePaints(ov.fill) || [];  // 프레임/텍스트/도형: 배경 fill 직접
   }
   if (ov.enabled === false) node.visible = false;
-  // 타이포 오버라이드는 아직 미적용 (부분정보 병합 문제 — Phase 3). 조용히 버리지 말고 알린다.
-  if (ov.fontFamily !== undefined || ov.fontWeight !== undefined || ov.fontSize !== undefined)
-    DBG.push("인스턴스 타이포 오버라이드 미적용 [" + (node.name || "?") + "] — 컴포넌트 정의에 바인딩 권장");
+  if (node.type === "TEXT") applyTypoOverride(node, ov);
+  // 아직 적용 못 하는 키는 조용히 버리지 말고 집계한다.
+  // (x/y 는 Pencil 이 계산된 절대좌표를 그대로 echo 한 것이라 auto-layout 마스터에서 재현되므로 세지 않는다)
+  for (const k of UNAPPLIED_OV_KEYS) if (ov[k] !== undefined) stat("ov." + k, "skip");
+}
+
+const UNAPPLIED_OV_KEYS = ["icon", "width", "height", "textGrowth", "cornerRadius",
+  "stroke", "strokeWidth", "strokeAlignment", "strokeLinecap", "strokeLinejoin", "textAlign", "textAlignVertical"];
+
+// STYLE_CANDIDATES 의 역인덱스 — 오버라이드가 weight 를 안 주면 현재 스타일에서 되찾는다
+let STYLE_TO_WEIGHT = null;
+function styleToWeight(style) {
+  if (!STYLE_TO_WEIGHT) {
+    STYLE_TO_WEIGHT = {};
+    for (const w in STYLE_CANDIDATES) {
+      if (w === "normal" || w === "bold") continue;   // 별칭이 숫자 키를 덮지 않게
+      for (const s of STYLE_CANDIDATES[w]) {
+        STYLE_TO_WEIGHT[s.toLowerCase()] = w;
+        STYLE_TO_WEIGHT[(s + " Italic").toLowerCase()] = w;
+        STYLE_TO_WEIGHT[(s + "Italic").toLowerCase()] = w;
+      }
+    }
+    STYLE_TO_WEIGHT["italic"] = "400";
+  }
+  return STYLE_TO_WEIGHT[String(style || "").toLowerCase()] || "400";
+}
+
+// 인스턴스 오버라이드의 타이포 적용. 오버라이드는 **부분 정보**라 fontName 을 현재 값과 병합해야 한다.
+// applyOverride → buildRef → buildNode → buildFrame 이 전부 동기 함수라 loadFontAsync 를 부를 수 없으므로,
+// loadFonts 가 미리 로드해 둔 조합(LOADED)만 적용하고 아니면 현행 유지한다 → 회귀 0.
+// 리터럴만 대입하면 컴포넌트에서 상속된 바인딩이 끊기므로 여기서도 "리터럴 + 바인딩" 쌍으로 처리한다.
+function applyTypoOverride(node, ov) {
+  const fsz = resolveNum(ov.fontSize);
+  if (typeof fsz === "number") {
+    try { node.fontSize = fsz; bindField(node, "fontSize", ov.fontSize, "FLOAT", node.fontSize); }
+    catch (e) { stat("ov.fontSize", "error", e && e.message); }
+  }
+  const lsp = resolveNum(ov.letterSpacing);
+  if (typeof lsp === "number") {
+    try {
+      node.letterSpacing = { value: lsp, unit: "PIXELS" };
+      bindField(node, "letterSpacing", ov.letterSpacing, "FLOAT", lsKey(node), lsKey, (n) => { n.letterSpacing = { value: lsp, unit: "PIXELS" }; });
+    } catch (e) { stat("ov.letterSpacing", "error", e && e.message); }
+  }
+  const lh = resolveNum(ov.lineHeight);
+  if (typeof lh === "number") { try { node.lineHeight = { value: lh * 100, unit: "PERCENT" }; } catch (e) {} }
+
+  if (ov.fontFamily === undefined && ov.fontWeight === undefined && ov.fontStyle === undefined) return;
+  const cur = node.fontName && node.fontName !== figma.mixed ? node.fontName : null;
+  if (!cur) { stat("ov.fontName", "skip", "fontName 이 mixed"); return; }
+  const fam = resolveStr(ov.fontFamily) || cur.family;
+  const weight = ov.fontWeight !== undefined ? resolveStr(ov.fontWeight) : styleToWeight(cur.style);
+  const ital = ov.fontStyle !== undefined ? (resolveStr(ov.fontStyle) === "italic") : /italic/i.test(cur.style);
+  const next = resolveFont(fam, weight, ital);
+  if (!LOADED.has(next.family + "||" + next.style)) {
+    stat("ov.fontName", "skip", "미프리로드 " + next.family + " " + next.style);
+    return;
+  }
+  try { node.fontName = next; } catch (e) { stat("ov.fontName", "error", e && e.message); return; }
+  stat("ov.fontName", "ok");
+  if (ov.fontWeight !== undefined) bindFontWeight(node, ov.fontWeight, next);
+  if (ov.fontFamily !== undefined) bindFontFamily(node, ov.fontFamily, next);
 }
 function parentLayoutOf(parent) {
   if (!parent || !("layoutMode" in parent)) return null;
@@ -583,7 +731,7 @@ function buildNode(spec) {
       node = figma.createPolygon();
       if (spec.polygonCount && spec.polygonCount >= 3) { try { node.pointCount = spec.polygonCount; } catch (e) {} }
       setFills(node, spec); setStroke(node, spec);
-      if (typeof spec.cornerRadius === "number") node.cornerRadius = spec.cornerRadius;
+      setCorner(node, spec.cornerRadius);   // 직접 대입은 $ref 와 배열을 놓친다
       setEffects(node, spec.effect);
       break;
     default:
@@ -611,31 +759,43 @@ function textFontOf(spec) {
     resolveStr(spec.fontStyle) === "italic"
   );
 }
-function collectFonts(spec, set) {
+function collectFonts(spec, set, fams, weights) {
   if (!spec || typeof spec !== "object") return;
   // text 노드 + descendants 오버라이드 객체(type 없음)도 폰트 속성을 가질 수 있다
   if (spec.type === "text" || spec.fontFamily !== undefined || spec.fontWeight !== undefined) {
     const r = textFontOf(spec);
     set.add(r.family + "||" + r.style);
+    if (fams) { const f = resolveStr(spec.fontFamily); if (f) fams.add(String(f)); }
+    if (weights) { const w = resolveStr(spec.fontWeight); if (w != null) weights.add(String(w)); }
   }
-  for (const c of spec.children || []) collectFonts(c, set);
+  for (const c of spec.children || []) collectFonts(c, set, fams, weights);
   const d = spec.descendants;  // 교체 subtree/오버라이드 안의 텍스트도 프리로드 대상
-  if (d) for (const k in d) if (d[k] && typeof d[k] === "object") collectFonts(d[k], set);
+  if (d) for (const k in d) if (d[k] && typeof d[k] === "object") collectFonts(d[k], set, fams, weights);
 }
 async function loadFonts(allSpecs) {
   await buildFontIndex(); // 설치된 폰트 목록 먼저 확보 (resolveFont 가 이걸 참조)
   const set = new Set();
   set.add(ANY_FONT.family + "||" + ANY_FONT.style);
-  for (const s of allSpecs) collectFonts(s, set);
+  const fams = new Set([ANY_FONT.family, "Inter"]);
+  const weights = new Set(["400"]);
+  for (const s of allSpecs) collectFonts(s, set, fams, weights);
+  // 교차곱 폐쇄: descendants 오버라이드는 대개 fontWeight 만 갖는데, textFontOf 는 fontFamily 가 없으면
+  // 무조건 "Inter" 로 계산한다 → 정작 필요한 (원래 패밀리 × 새 굵기) 조합이 프리로드에서 빠진다.
+  // 등장한 패밀리 × 등장한 굵기를 전부 미리 로드해 그 구멍을 막는다. loadFontAsync 는 멱등·저비용(≈15회).
+  for (const f of fams) for (const w of weights) {
+    const r = resolveFont(f, w, false);
+    set.add(r.family + "||" + r.style);
+  }
   for (const key of set) {
-    const [family, style] = key.split("||");
-    try { await figma.loadFontAsync({ family, style }); } catch (e) {}
+    const i = key.indexOf("||");
+    const family = key.slice(0, i), style = key.slice(i + 2);
+    try { await figma.loadFontAsync({ family, style }); LOADED.add(key); } catch (e) {}
   }
 }
 
 // ---- 변수 생성 (테마 모드 + 숫자/문자열 변수). selectedTheme = 기본 모드로 쓸 테마 ----
 async function createVariables(varData, selectedTheme, collectionName) {
-  VAR_HEX = {}; VAR_NUM = {}; VAR_STR = {};
+  VAR_HEX = {}; VAR_NUM = {}; VAR_STR = {}; VARS = {}; VAR_OBJ = {};
   if (!varData) return;
   const collName = collectionName || "Pencil Tokens";
   // 포맷 판별: 전체형식 {themes, variables} vs 평탄형식 {name:"#hex"}
@@ -696,6 +856,12 @@ async function createVariables(varData, selectedTheme, collectionName) {
     try {
       if (type === "color") {
         let v = existingVars[name];
+        // 같은 이름의 다른 타입 변수가 이미 있으면 createVariable 이 이름 중복으로 예외를 던져 무음 실패한다 → 명시적으로 알린다
+        if (v && v.resolvedType !== "COLOR") {
+          DBG.push("기존 변수 타입 불일치 " + name + " (" + v.resolvedType + " ≠ COLOR)"
+                 + " — Figma 에서 그 변수를 지우고 재실행하세요. 이번 실행은 리터럴로 진행");
+          continue;
+        }
         if (!v) v = figma.variables.createVariable(name, collection, "COLOR");
         if (Array.isArray(rawValue)) {
           let lightVal = null;
@@ -724,7 +890,43 @@ async function createVariables(varData, selectedTheme, collectionName) {
           const pick = rawValue.find((e) => axisName && e && e.theme && e.theme[axisName] === modeNames[0]) || rawValue[0];
           val = pick && pick.value;
         }
+        // ★ VAR_NUM/VAR_STR 은 resolveNum/resolveStr/textFontOf 가 쓰는 리터럴 해석 경로다.
+        //   바인딩과 무관하게 항상 채운다 — 지우면 폰트가 전부 폴백되고 수치가 미해석 문자열로 샌다.
         (type === "number" ? VAR_NUM : VAR_STR)[name] = val;
+        if (!OPT.bindTokens) continue;   // OFF → 변수도 만들지 않는다 (패널엔 있는데 아무것도 안 걸린 반쪽 상태 방지)
+
+        // Figma 측 타입 결정. fontweight-* 만 string("600") → FLOAT(600) 으로 변환한다 (이름 규약 + 값이 숫자일 때만).
+        const numeric = (type === "number") || (WEIGHT_RE.test(name) && /^-?\d+(\.\d+)?$/.test(String(val)));
+        const ftype = numeric ? "FLOAT" : "STRING";
+        const cast = (x) => (numeric ? Number(x) : String(x == null ? "" : x));
+        if (numeric && !isFinite(cast(val))) { DBG.push("숫자 변환 실패 " + name + "=" + val); continue; }
+
+        let v = existingVars[name];
+        if (v && v.resolvedType !== ftype) {
+          DBG.push("기존 변수 타입 불일치 " + name + " (" + v.resolvedType + " ≠ " + ftype + ")"
+                 + " — Figma 에서 그 변수를 지우고 재실행하세요. 이번 실행은 리터럴로 진행");
+          continue;
+        }
+        if (!v) v = figma.variables.createVariable(name, collection, ftype);
+        if (Array.isArray(rawValue)) {
+          for (const entry of rawValue) {
+            const mk = axisName && entry.theme ? entry.theme[axisName] : null;
+            const mid = mk ? modeIds[mk] : collection.defaultModeId;
+            if (!mid) continue;   // 생성 실패한 모드(플랜 제한 등) → 건너뜀
+            v.setValueForMode(mid, cast(entry.value));
+          }
+        } else if (modeNames.length) {
+          for (const mn of modeNames) if (modeIds[mn]) v.setValueForMode(modeIds[mn], cast(val));
+        } else {
+          v.setValueForMode(collection.defaultModeId, cast(val));
+        }
+        if (LINEHEIGHT_RE.test(name)) {
+          try {
+            v.description = "배수(multiplier) 값. Figma 는 lineHeight 에 변수를 걸면 단위를 PIXELS 로 강제하므로,"
+              + " 바인딩하면 " + cast(val) + "px 이 됩니다 — 바인딩 금지. 값 참고용.";
+          } catch (e) {}
+        }
+        VAR_OBJ[name] = v;
       }
     } catch (e) { DBG.push("변수 생성 실패 " + name + ": " + (e && e.message)); }
   }
@@ -738,6 +940,173 @@ function resolveNum(v) {
 function resolveStr(v) {
   if (typeof v === "string" && v[0] === "$") { const r = VAR_STR[v.slice(1)]; return r == null ? v : r; }
   return v;
+}
+
+// ---- 토큰 바인딩 (Figma Variable) ----
+// 설계 원칙: 리터럴을 먼저 정확히 대입한 **뒤에만** 바인딩을 덧붙이고, 직후 같은 속성을 다시 읽어
+// 의도값과 다르면 즉시 언바인딩 + 리터럴 복구한다. 문서와 실동작이 어긋나도 시각 회귀가 0이 된다.
+let BIND_STAT = {};   // field -> {ok, revert, error, skip, samples[]}
+let CAP = {};         // field -> false 면 이후 시도를 건너뜀 (프로브 / 서킷 브레이커가 설정)
+
+function stat(field, kind, sample) {
+  const s = BIND_STAT[field] || (BIND_STAT[field] = { ok: 0, revert: 0, error: 0, skip: 0, samples: [] });
+  s[kind]++;
+  if (sample && s.samples.length < 3) s.samples.push(sample);   // 690건 실패가 690줄이 되는 걸 막는다
+  return s;
+}
+
+function varObjFor(ref, wantType) {
+  if (typeof ref !== "string" || ref[0] !== "$") return null;
+  const v = VAR_OBJ[ref.slice(1)];
+  if (!v) return null;
+  if (wantType && v.resolvedType !== wantType) return null;
+  return v;
+}
+
+/**
+ * node 의 field 에 변수를 덧바인딩한다. 실패·불일치는 전부 되돌린다.
+ * @param ref     "$토큰명" (리터럴이면 아무것도 안 함)
+ * @param expect  바인딩 직전에 대입해 둔 리터럴 값 = 리드백 비교 기준
+ * @param readFn  노드에서 비교값을 꺼내는 함수 (생략 시 node[field])
+ * @param restoreFn 되돌릴 때 리터럴을 복구하는 함수. readFn 을 주면 **반드시 같이** 줘야 한다 —
+ *                  fontFamily/fontWeight 는 실제 저장소가 node.fontName 이라 node[field] 대입으로 복구되지 않는다.
+ */
+function bindField(node, field, ref, wantType, expect, readFn, restoreFn) {
+  if (!OPT.bindTokens) return false;
+  if (typeof ref !== "string" || ref[0] !== "$") return false;   // 리터럴 = 바인딩 대상 아님
+  if (CAP[field] === false) { stat(field, "skip"); return false; }
+  const v = varObjFor(ref, wantType);
+  if (!v) { stat(field, "skip", ref + " — 변수 없음/타입 불일치"); return false; }
+  if (!node || typeof node.setBoundVariable !== "function") { stat(field, "skip", "setBoundVariable 미지원 노드"); return false; }
+  try {
+    node.setBoundVariable(field, v);
+  } catch (e) {
+    stat(field, "error", (node.name || "?") + ": " + (e && e.message));
+    return false;
+  }
+  try {
+    const got = readFn ? readFn(node) : node[field];
+    if (got !== expect) {
+      try { node.setBoundVariable(field, null); } catch (e2) {}
+      // 값까지 틀어졌을 수 있으니 리터럴을 되돌린다 (언바인딩만으로는 복구되지 않는다)
+      try { if (restoreFn) restoreFn(node); else node[field] = expect; } catch (e3) {}
+      const s = stat(field, "revert", (node.name || "?") + ": " + JSON.stringify(got) + " ≠ " + JSON.stringify(expect));
+      // 서킷 브레이커는 "이 필드가 근본적으로 안 먹는다"일 때만 — 성공 이력이 있으면 개별 예외일 뿐이므로 계속 시도한다
+      if (s.revert >= 3 && s.ok === 0) { CAP[field] = false; DBG.push("바인딩 중단: " + field + " — 되돌림 3회, 성공 0"); }
+      return false;
+    }
+  } catch (e) {
+    try { node.setBoundVariable(field, null); } catch (e2) {}
+    try { if (restoreFn) restoreFn(node); else node[field] = expect; } catch (e3) {}
+    stat(field, "error", "리드백 실패: " + (e && e.message));
+    return false;
+  }
+  stat(field, "ok");
+  return true;
+}
+
+// 프로브용: 이름 패턴 + 타입이 맞는 첫 변수와 그 원시 값
+function probeVar(re, wantType) {
+  for (const name in VAR_OBJ) {
+    if (!re.test(name)) continue;
+    const v = VAR_OBJ[name];
+    if (wantType && v.resolvedType !== wantType) continue;
+    const raw = VAR_NUM[name] !== undefined ? VAR_NUM[name] : VAR_STR[name];
+    return { v: v, name: name, value: v.resolvedType === "FLOAT" ? Number(raw) : String(raw) };
+  }
+  return null;
+}
+
+// 필드 지원 여부는 파일 단위로 불변이다 → 임시 노드로 **한 번만** 측정하고 즉시 제거한다.
+// 판정: 예외를 던지거나 값을 "리터럴도 토큰값도 아닌 것"으로 만들면 그 필드를 차단(CAP=false).
+// 값이 안 바뀌는 무반응은 차단하지 않는다 — 리터럴을 먼저 정확히 대입하므로 시각적으로 무해하고,
+// 바인딩은 남아서 Dev Mode·변수 패널에 토큰이 보인다.
+async function probeCapabilities() {
+  if (!OPT.bindTokens) return;
+  const note = [];
+  const judge = (field, before, after, want) => {
+    if (after === want) { note.push(field + "=존중"); return; }
+    if (after === before) { note.push(field + "=무시(리터럴 유지)"); return; }
+    CAP[field] = false;
+    note.push(field + "=차단(" + JSON.stringify(before) + "→" + JSON.stringify(after) + ")");
+  };
+  let t = null, r = null;
+  try {
+    t = figma.createText();
+    t.fontName = ANY_FONT;
+    t.characters = "Ag";
+
+    const fs = probeVar(/^fontsize[-.]/i, "FLOAT");
+    if (fs) {
+      const before = fs.value === 11 ? 12 : 11;
+      t.fontSize = before;
+      try { t.setBoundVariable("fontSize", fs.v); judge("fontSize", before, t.fontSize, fs.value); }
+      catch (e) { CAP.fontSize = false; note.push("fontSize=예외(" + (e && e.message) + ")"); }
+      try { t.setBoundVariable("fontSize", null); } catch (e) {}
+      t.fontSize = before;
+    }
+
+    // fontWeight: Regular 노드에 다른 굵기 변수를 걸어 fontName.style 이 바뀌는지 본다.
+    let fw = null;
+    for (const name in VAR_OBJ) {
+      if (!WEIGHT_RE.test(name) || VAR_OBJ[name].resolvedType !== "FLOAT") continue;
+      const raw = Number(VAR_NUM[name] !== undefined ? VAR_NUM[name] : VAR_STR[name]);
+      if (raw && raw !== 400) { fw = { v: VAR_OBJ[name], value: raw }; break; }
+    }
+    if (fw) {
+      const base = resolveFont(ANY_FONT.family, "400", false);
+      const want = resolveFont(ANY_FONT.family, String(fw.value), false);
+      if (want.family === base.family && want.style !== base.style) {
+        try { await figma.loadFontAsync(want); } catch (e) {}
+        t.fontName = base;
+        try {
+          t.setBoundVariable("fontWeight", fw.v);
+          const got = t.fontName && t.fontName !== figma.mixed ? t.fontName.style : null;
+          judge("fontWeight", base.style, got, want.style);
+        } catch (e) { CAP.fontWeight = false; note.push("fontWeight=예외(" + (e && e.message) + ")"); }
+        try { t.setBoundVariable("fontWeight", null); } catch (e) {}
+        try { t.fontName = base; } catch (e) {}
+      } else note.push("fontWeight=측정불가(대조 스타일 없음)");
+    }
+
+    const ls = probeVar(/^tracking[-.]/i, "FLOAT");
+    if (ls) {
+      const before = ls.value === 0 ? 1 : 0;
+      t.letterSpacing = { value: before, unit: "PIXELS" };
+      try {
+        t.setBoundVariable("letterSpacing", ls.v);
+        judge("letterSpacing", before, t.letterSpacing && t.letterSpacing.value, ls.value);
+      } catch (e) { CAP.letterSpacing = false; note.push("letterSpacing=예외(" + (e && e.message) + ")"); }
+      try { t.setBoundVariable("letterSpacing", null); } catch (e) {}
+    }
+
+    // lineHeight 는 프로덕션에서 바인딩하지 않는다(배수↔PIXELS 불일치). 실제 단위만 기록해 둔다.
+    const lh = probeVar(LINEHEIGHT_RE, "FLOAT");
+    if (lh) {
+      t.lineHeight = { value: 150, unit: "PERCENT" };
+      try {
+        t.setBoundVariable("lineHeight", lh.v);
+        note.push("lineHeight=바인딩 시 " + JSON.stringify(t.lineHeight) + " (그래서 영구 제외)");
+      } catch (e) { note.push("lineHeight=예외(" + (e && e.message) + ")"); }
+      try { t.setBoundVariable("lineHeight", null); } catch (e) {}
+    }
+
+    const cr = probeVar(/^radius[-.]/i, "FLOAT");
+    if (cr) {
+      r = figma.createRectangle();
+      const before = cr.value === 3 ? 5 : 3;
+      r.cornerRadius = before;
+      try { r.setBoundVariable("cornerRadius", cr.v); judge("cornerRadius", before, r.cornerRadius, cr.value); }
+      catch (e) { CAP.cornerRadius = false; note.push("cornerRadius=예외(" + (e && e.message) + ")"); }
+      try { r.setBoundVariable("cornerRadius", null); } catch (e) {}
+    }
+  } catch (e) {
+    DBG.push("capability 프로브 실패(보수적으로 계속 진행): " + (e && e.message));
+  } finally {
+    if (t) { try { t.remove(); } catch (e) {} }
+    if (r) { try { r.remove(); } catch (e) {} }
+  }
+  if (note.length) DBG.push("바인딩 프로브: " + note.join(" · "));
 }
 
 // ---- 이미지 준비 ----
@@ -811,9 +1180,10 @@ function getOrCreatePage(name) {
 }
 
 // ---- 메인 임포트 ----
-async function importDesign(data, icons, selected, pageMap, compPageMap, theme, collectionName) {
+async function importDesign(data, icons, selected, pageMap, compPageMap, theme, collectionName, opts) {
+  resetState();   // 세션 내 재실행 안전 (특히 COMP_MAP 잔존 방지)
+  OPT = Object.assign({ bindTokens: true }, opts || {});   // opts 를 안 보내는 구 ui.html 은 ON 으로 동작
   ICONS = icons || {};
-  ROOT_FILL_OVR = 0;
   const allScreens = data.screens || [];
   const allComponents = data.components || [];
   pageMap = pageMap || {};
@@ -824,12 +1194,13 @@ async function importDesign(data, icons, selected, pageMap, compPageMap, theme, 
   const screens = indices.map((i) => allScreens[i]).filter(Boolean);
 
   // 순서 중요: createVariables 가 VAR_NUM/VAR_STR 을 채워야 loadFonts 의 $변수(fontFamily 등) 해석이 된다.
-  // (createVariables 는 622행에서 VAR_* 를 리셋하므로 loadFonts 뒤로 옮기면 안 됨)
+  // (createVariables 진입부에서 VAR_* 를 리셋하므로 loadFonts 뒤로 옮기면 안 됨)
   figma.ui.postMessage({ type: "progress", text: "변수/이미지 준비 중..." });
   await createVariables(data.variables || {}, theme, collectionName);
   prepareImages(data.images || {});
   figma.ui.postMessage({ type: "progress", text: "폰트 로딩 중..." });
   await loadFonts([].concat(allComponents, screens));
+  await probeCapabilities();   // 필드별 바인딩 지원 여부를 1회만 측정 (변수·폰트가 준비된 뒤)
 
   // 0) 화면 페이지 준비 (이름→PageNode)
   const pageOf = {};        // 화면 인덱스 -> PageNode
@@ -885,15 +1256,31 @@ async function importDesign(data, icons, selected, pageMap, compPageMap, theme, 
   } catch (e) {}
 
   figma.ui.postMessage({ type: "debug", text: "ref 루트 fill 오버라이드 적용: " + ROOT_FILL_OVR + "곳 (0이면 옛 코드 — 플러그인 재실행 필요)" });
+  figma.ui.postMessage({ type: "debug", text: bindSummary() });
   if (DBG.length) figma.ui.postMessage({ type: "debug", text: "=== 빌드 경고 ===\n" + DBG.join("\n") });
 
   figma.notify("임포트 완료 ✓ 화면 " + placed.length + " / 컴포넌트 " + Object.keys(COMP_MAP).length + " / 페이지 " + Object.keys(usedPages).length);
   figma.ui.postMessage({ type: "done" });
 }
 
+// 필드별 바인딩 집계. 690건이 실패해도 690줄이 아니라 한 줄 + 샘플 3개로 보고한다.
+function bindSummary() {
+  const fields = Object.keys(BIND_STAT).sort();
+  if (!fields.length) return "=== 토큰 바인딩 === 시도 없음 (bindTokens=" + OPT.bindTokens + ")";
+  const rows = fields.map((f) => {
+    const s = BIND_STAT[f];
+    let line = "  " + f + ": 성공 " + s.ok + " / 되돌림 " + s.revert + " / 예외 " + s.error + " / 건너뜀 " + s.skip;
+    for (const ex of s.samples) line += "\n      예) " + ex;
+    return line;
+  });
+  const blocked = Object.keys(CAP).filter((k) => CAP[k] === false);
+  return "=== 토큰 바인딩 요약 (bindTokens=" + OPT.bindTokens
+    + (blocked.length ? ", 차단된 필드: " + blocked.join(",") : "") + ") ===\n" + rows.join("\n");
+}
+
 figma.ui.onmessage = async (msg) => {
   if (msg.type === "import") {
-    try { await importDesign(msg.data, msg.icons, msg.selected, msg.pageMap, msg.compPageMap, msg.theme, msg.collectionName); }
+    try { await importDesign(msg.data, msg.icons, msg.selected, msg.pageMap, msg.compPageMap, msg.theme, msg.collectionName, msg.opts); }
     catch (e) {
       console.error(e);
       figma.notify("에러: " + (e && e.message ? e.message : e), { error: true });

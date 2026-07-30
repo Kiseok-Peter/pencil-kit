@@ -10,6 +10,7 @@ Figma 직접 연동이 없어서, Pencil MCP로 추출한 JSON을 중간 산출�
 | **Python 3.6+** | `build.py` 등 스크립트·런처. 외부 패키지 불필요(표준 라이브러리만) — `pip install` 없음 |
 | **Pencil v1.2.2+ MCP** (Claude Code 등) | `.pen` 은 암호화되어 있어 추출·아이콘 PDF 뽑기는 MCP 로만 가능. v1.2.2 에서 MCP 도구 세트가 전면 교체됨(`get_app_state`+`execute`) — 절차는 RUNBOOK.md |
 | **Figma 데스크톱** | Figma 파이프라인에서 플러그인(`manifest.json`) 임포트용 |
+| **Node.js** (선택) | 플러그인 오프라인 검증(`node test/verify-bindings.js`)에만 필요. 변환 자체에는 불필요 |
 
 ## 설치
 
@@ -60,6 +61,7 @@ cd pencil-kit && python3 launcher.py
 | `diff.py` | 지난 스냅샷 대비 변경(컴포넌트/화면/토큰 +~-) 감지 | 공통 |
 | `PENCIL-MCP-NOTES.md` | `.pen` 편집 시 MCP 함정 모음(실측) | 공통 |
 | `manifest.json` `code.js` `ui.html` | Figma 플러그인 본체 | Figma |
+| `test/verify-bindings.js` | 플러그인 오프라인 검증(Figma 없이 `node` 로) | Figma |
 | `RUNBOOK.md` | Figma 변환 절차(추출→빌드→임포트) | Figma |
 | `extract-for-swiftui.py` | design-data → 경량 `swiftui-input.json`(화면 선택) | SwiftUI |
 | `make-icon-ids.py` | pen-nodes → 아이콘ID 맵 `_icon_ids.json` | SwiftUI |
@@ -87,7 +89,14 @@ python3 verify.py --data ../초코로드/export
 python3 merge-nodes.py --data ../초코로드/export --inventory _inventory.json
 # 변경 감지 (재추출 후 바뀐 것만 확인) — --update 로 기준 갱신
 python3 diff.py --data ../초코로드/export
+# 플러그인 오프라인 검증 (code.js 를 고쳤다면 — Figma 없이 시각 회귀 0 을 증명)
+node test/verify-bindings.js --data ../초코로드/export
 ```
+
+> `verify-bindings.js` 는 `figma` API 를 스텁으로 갈아끼워 `code.js` 를 `vm` 에 격리 실행한다.
+> 핵심은 **쌍둥이 차분** — 같은 데이터를 바인딩 ON/OFF 로 각각 임포트해 트리를 비교하고, 차분이 0이면
+> "바인딩이 시각 결과를 바꾸지 않는다"가 증명된다. Figma 의 실동작이 문서와 어긋나는 경우(폰트 미설치,
+> 굵기 변수 무반응, 행간 단위 강제 등) 5종을 모두 돌린다.
 
 ## 동작 원리 (Figma)
 
@@ -96,7 +105,10 @@ python3 diff.py --data ../초코로드/export
 ```
 
 - **컴포넌트 먼저** → Figma Component 등록 → 화면의 `ref` 를 **인스턴스**로 연결 (descendants 오버라이드)
-- **색상 변수** → Figma Variables 컬렉션 (플러그인 UI에서 이름 지정, 기본 "Pencil Tokens", light/dark 모드)
+- **토큰 → Figma Variables** 컬렉션 (플러그인 UI에서 이름 지정, 기본 "Pencil Tokens", light/dark 모드)
+  - 색(COLOR)은 fill/stroke 에, 타이포(fontSize·fontFamily·fontWeight·letterSpacing)와 cornerRadius 는 해당 필드에 **바인딩**된다
+  - 리터럴을 먼저 정확히 대입한 뒤 바인딩하고, 리드백이 어긋나면 되돌린다 → 바인딩이 실패해도 **결과물이 나빠지지 않는다**
+  - `lineHeight` 는 Figma 가 변수 바인딩 시 단위를 PIXELS 로 강제해서 제외 (자세히는 RUNBOOK.md)
 - **lucide 아이콘** → 플러그인이 unpkg/jsdelivr CDN에서 SVG 받아 벡터화
 - **이미지** → base64 → `figma.createImage` fill
 - **auto-layout / 패딩 / 정렬 / fill_container·fit_content / absolute** → Figma auto-layout 매핑

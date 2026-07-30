@@ -86,8 +86,31 @@ pencil-kit/                  ← 이 키트 (스크립트·플러그인, 재사�
 > 추출은 **읽기 전용 함수만** 쓴다(`Get`/`GetVariables`/`Print`). `execute` 는 쓰기(`Insert`/`Update`/`SetVariables`…)도
 > 할 수 있으므로, 디자인 변경은 사용자가 명시 요청할 때만.
 
-> **한계**: Figma 플러그인은 현재 **color 변수만** Figma Variables 로 만든다. number/string 토큰(타이포·spacing)은
-> 렌더 시 값으로 인라인된다(계산은 정확, 바인딩만 없음). Figma 측 number/string 변수 생성+바인딩은 추후 과제.
+## Figma 토큰 바인딩 (플러그인이 하는 일)
+
+플러그인은 `variables.json` 의 토큰을 **Figma Variables 로 만들고**(COLOR/FLOAT/STRING), 노드 속성에 바인딩한다.
+UI 의 **"토큰 바인딩"** 체크박스를 끄면 색 변수만 만들고 나머지는 값으로 인라인한다(이전 동작).
+
+| Pencil 속성 | Figma 필드 | 변수 타입 | 비고 |
+|---|---|---|---|
+| `fill` `stroke` | paint | COLOR | `setBoundVariableForPaint` |
+| `fontSize` | `fontSize` | FLOAT | |
+| `fontFamily` | `fontFamily` | STRING | **폰트가 실제 설치돼 있을 때만** 바인딩. 미설치 폰트를 걸면 텍스트 전체가 missing font 가 된다 |
+| `fontWeight` | `fontWeight` | **FLOAT** | Pencil 은 string `"600"`, Figma 는 number 를 요구 → 플러그인이 `600` 으로 변환 생성 |
+| `letterSpacing` | `letterSpacing` | FLOAT | Pencil·Figma 모두 px |
+| `cornerRadius` | `cornerRadius` / per-side | FLOAT | |
+| `gap` `padding` `strokeWidth` | `itemSpacing` / `padding*` / `strokeWeight` | FLOAT | 배관만 완료 — `.pen` 이 토큰화되면 자동 작동 |
+| `lineHeight` | — | — | **바인딩 불가**(아래) |
+
+**Figma Plugin API 제약 (실측·문서 확인)**
+- `lineHeight` 에 number 변수를 걸면 **단위가 PIXELS 로 강제**된다. Pencil 의 `lineHeight` 는 배수(1.5)라 1.5px 이 되어버린다. 우회 방법이 없어 **영구 제외** — 변수는 만들되 `description` 으로 오용을 막고 렌더는 `PERCENT` 리터럴로 한다.
+- `fontWeight` 는 `TextNode` 에서 **읽기 전용 number**(`fontName.style` 로만 실제 변경). number 변수 바인딩이 캔버스에 반영되지 않는다는 보고가 있어, 플러그인은 `fontName` 을 리터럴로 먼저 정확히 세팅한 뒤 바인딩을 덧붙인다 → 반영되든 무시되든 **시각은 동일**하고 Dev Mode 에는 토큰이 뜬다. 실제 반영 여부는 실행 로그의 `바인딩 프로브:` 줄에 나온다.
+- `boundVariables` 의 **텍스트 필드 값은 배열**(`boundVariables.fontSize[0].id`), 노드 필드는 단일 별칭.
+
+**안전 설계**: 모든 바인딩은 리터럴을 정확히 대입한 **뒤에** 시도하고, 직후 같은 속성을 다시 읽어 어긋나면 즉시 언바인딩 + 리터럴 복구한다. 최악의 경우에도 결과물이 바인딩 없는 것과 동일하다 — `node test/verify-bindings.js` 가 이를 기계적으로 증명한다.
+
+임포트 후 UI 로그의 **`=== 토큰 바인딩 요약 ===`** 에서 필드별 `성공/되돌림/예외/건너뜀` 을 확인한다.
+`되돌림`·`예외` 가 0 이 아니면 그 필드는 이 파일에서 기대대로 동작하지 않는 것이다.
 
 ---
 

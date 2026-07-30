@@ -91,7 +91,7 @@ def main():
     typo_lit = {k: 0 for k in TYPO_STR_KEYS + TYPO_NUM_KEYS}   # 리터럴 개수
     typo_set = {k: 0 for k in TYPO_STR_KEYS + TYPO_NUM_KEYS}   # 값이 있는 개수
     fam_dist, size_dist, weight_dist = {}, {}, {}
-    override_typo = [0]                     # descendants 오버라이드의 타이포 — Figma 플러그인 미적용
+    override_typo = [0]                     # descendants 오버라이드의 타이포 (인스턴스별 예외 — 개수만 보고)
     text_total = [0]
     seen_type_bad = set()
 
@@ -200,10 +200,11 @@ def main():
             print("     리터럴 fontSize 분포: " + " ".join(f"{k}:{v}" for k, v in sorted(size_dist.items(), key=lambda x: -x[1])) + f" ({len(size_dist)}종)")
         if weight_dist:
             print("     리터럴 fontWeight 분포: " + " ".join(f"{k}:{v}" for k, v in sorted(weight_dist.items(), key=lambda x: -x[1])))
-    # 이것은 토큰화 여부가 아니라 Figma 플러그인의 한계(applyOverride 가 타이포를 적용하지 않음)라
-    # --strict-typo 게이트에 포함하지 않는다. 인스턴스별 정당한 예외가 있을 수 있다.
+    # 인스턴스별 정당한 예외일 수 있으므로 --strict-typo 게이트에 넣지 않는다.
+    # Figma 플러그인은 이제 이걸 적용한다(리터럴+바인딩). 단 오버라이드는 부분정보라
+    # (원래 패밀리 × 새 굵기) 조합이 프리로드돼 있어야 폰트가 바뀐다 — 안 되면 플러그인이 현행 유지 + 집계.
     warn(override_typo[0] == 0,
-         f"인스턴스 오버라이드 타이포 {override_typo[0]}곳 — Figma 플러그인 미적용(값은 토큰이어도 무시됨)")
+         f"인스턴스 오버라이드 타이포 {override_typo[0]}곳 — 플러그인이 적용하지만 폰트 조합 프리로드에 의존")
     warn(not bad_buckets,
          f"토큰 버킷 규약 밖 이름 {len(bad_buckets)}개: {bad_buckets} — iOS gen-design-tokens.py 가 첫 하이픈 앞({sorted(TOKEN_BUCKETS)})만 인식",
          strict=STRICT_TOKENS)
