@@ -40,8 +40,15 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 | `fill_container` | `.frame(maxWidth: .infinity)` (또는 maxHeight) |
 | `fit_content` / 생략 | 내용 크기 (frame 미지정) |
 | `text` | `Text(content)` + `.font(.system(size: fontSize, weight:))` |
-| `fontWeight` "600"/"500"/"normal" | `.semibold`/`.medium`/`.regular` |
-| `textGrowth:"fixed-width"` | `.frame(maxWidth:, alignment:)` + 줄바꿈 허용 |
+| `fontFamily` (`"Outfit"` / `$font-*` 변수 참조여도) | **무시** — 항상 `.system` (고정 규칙 1) |
+| `fontSize` (숫자 / `$fontsize-*`) | `.font(.system(size:))` — pt 그대로 |
+| `fontWeight` `"400"`·`"normal"` / `"500"` / `"600"` / `"700"` | `.regular` / `.medium` / `.semibold` / `.bold` |
+| `lineHeight` (fontSize **배수**: 1.5 등) | `.lineSpacing(fontSize × (배수 − 1))` ⚠️ SwiftUI 는 "줄 사이 추가 여백(pt)" — 배수를 그대로 넣으면 오변환. 미지정(대부분)이면 `.lineSpacing` 붙이지 않음(시스템 기본) |
+| `letterSpacing` (**pt**: 1, 0.5, −1) | `.tracking(값)` |
+| `textAlign` | `.multilineTextAlignment(.leading/.center/.trailing)` |
+| `textAlignVertical` | 프레임 `alignment` (`.frame(…, alignment: .top/.center/.bottom)`) 또는 `VStack`+`Spacer()` |
+| `fontStyle:"italic"` | `.italic()` |
+| `textGrowth:"fixed-width"` | `.frame(maxWidth:, alignment:)` + 줄바꿈 허용 (그 외: `auto`=한 줄·크기 자동 → `.fixedSize()`, `fixed-width-height`=`.frame(width:height:)`) |
 | `fill: "$토큰"` | `Color("토큰")` 또는 `Theme.토큰` |
 | `fill: "#hex"` | `Color(hex: "...")` |
 | `fill: {type:"image"}` | `AsyncImage`/placeholder `Rectangle` (⚠️ 목업이라 번들 X — "고정 규칙" 참고) |
@@ -56,11 +63,12 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 
 ## ⚠️ 고정 규칙 (이 프로젝트 — 반드시 지킬 것)
 
-**1. 폰트 = 시스템 폰트만.**
-- 토큰의 폰트 패밀리(`font-body`/`font-heading`="Outfit", `font-system`="Inter")는 **커스텀 폰트지만 무시**한다.
+**1. 폰트 = 시스템 폰트만. (무시 대상은 "패밀리"뿐)**
+- **패밀리** 토큰(`font-body`/`font-heading`="Outfit", `font-system`="Inter")은 **커스텀 폰트지만 무시**한다.
 - **`Font.custom("Outfit")` / `Font.custom("Inter")` 절대 금지.** 항상 `.font(.system(size:, weight:))` 사용.
 - 폰트 파일 추가·`Info.plist`(`UIAppFonts`) 등록 **불필요** (시스템 폰트라 필요 없음).
-- 토큰은 **size/weight 매핑에만** 쓴다. (600→`.semibold`, 500→`.medium`, normal→`.regular`)
+- 단, **타이포 스케일 토큰은 소비한다**: `fontsize-*`(number)→size, `fontweight-*`(string "400"~"700")→`Font.Weight`,
+  `lineheight-*`(number 배수)→`.lineSpacing` 환산, `tracking-*`(number pt)→`.tracking`. 무시하는 건 패밀리뿐.
 - ※ 생성 AI 가 토큰에서 "Outfit"을 보면 습관적으로 `Font.custom` 을 넣는다 — **넣지 마라.**
 
 **2. 이미지 fill = 전부 목업 → 번들하지 않는다.**
@@ -71,14 +79,29 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 
 **3. 아이콘 = Pencil PDF 벡터** (5절). 사진(래스터)과 달리 아이콘은 벡터라 PDF. 혼동 주의.
 
-## 3) 토큰(변수) → Color
+## 3) 토큰(변수) → Color / 상수
 
 `variables`는 `{themes:{mode:[light,dark]}, variables:{name:{type, value:[{theme,value}]}}}` 구조.
 - **color** 변수 → Asset Catalog의 Color Set(Any/Dark 두 값) 또는 `Color` extension
-- **number** 변수(`radius-lg:14`, `spacing-md:16`) → 상수(`enum Spacing { static let md=16.0 }`)
-- **string** 변수(`font-body:"Outfit"` 등) → **무시** (위 고정 규칙 1: 시스템 폰트만 씀. 폰트 이름 상수 만들지 않음)
+- **number** 변수(`radius-*`, `spacing-*`, `fontsize-*`, `lineheight-*`, `tracking-*`) → 상수(`enum Spacing { static let md=16.0 }` 류)
+- **string** 변수는 둘로 갈린다:
+  - `font-body`/`font-heading`/`font-system` (패밀리) → **무시** (고정 규칙 1. 폰트 이름 상수 만들지 않음)
+  - `fontweight-*` (값 "400"~"700") → **소비** — `Font.Weight` 매핑 상수로 ("string 전부 무시" 아님!)
 
 라이트/다크는 Asset Catalog가 자동 전환하므로, 토큰을 Color Set으로 만들면 다크모드가 공짜로 됩니다.
+
+### 3-1) 타이포 토큰 접두 규약 (Phase 2 에서 도입)
+
+| 접두 | 타입 | 예 | SwiftUI |
+|---|---|---|---|
+| `fontsize-` | number | `fontsize-body: 15` | `.font(.system(size:))` 의 size |
+| `fontweight-` | **string** | `fontweight-body: "500"` | `Font.Weight` (`.medium`) |
+| `lineheight-` | number (배수) | `lineheight-body-small: 1.5` | `.lineSpacing(size × (배수−1))` |
+| `tracking-` | number (pt) | `tracking-app-title: -1` | `.tracking(-1)` |
+
+> 이름 규칙: iOS `Scripts/gen-design-tokens.py` 가 **첫 하이픈 앞** 세그먼트로 버킷을 분류한다
+> (`name.partition("-")`). `font-size-body` 는 버킷이 `font` 로 잡혀 **에러** — `fontsize-body` 처럼 붙여 쓴다.
+> `fontweight-*` 를 number 로 만들면 Pencil 이 타입 에러로 거부한다(string 필수).
 
 ## 4) 컴포넌트 → 재사용 View
 
@@ -153,6 +176,7 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 - ✅ 레이아웃(stack/spacing/padding), 스타일(색·모서리·그림자), 토큰(light/dark), 컴포넌트 구조
 - ❌ 상태/바인딩/액션/네비게이션/네트워킹 — 이건 별도 (TCA Reducer 등은 골격만 TODO로)
 - ✅ **폰트 = 시스템 폰트** (고정 규칙 1) → 폰트 파일·Info.plist 불필요
+- ✅ **타이포 스케일(fontsize/fontweight/lineheight/tracking) = 토큰으로 생성** (3-1절 — Phase 2 도입 후)
 - ✅ **이미지 = 목업, 번들 안 함** (고정 규칙 2) → AsyncImage/placeholder + TODO
 - ✅ **아이콘 = Pencil PDF 벡터** (5절, `pad-icons.py` 정규화 필수)
 

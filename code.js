@@ -403,7 +403,7 @@ function buildGroup(spec) {
 // ---- 텍스트 빌드 ----
 function buildText(spec) {
   const t = figma.createText();
-  const fnt = resolveFont(resolveStr(spec.fontFamily) || "Inter", resolveStr(spec.fontWeight), spec.fontStyle === "italic");
+  const fnt = textFontOf(spec);
   try { t.fontName = fnt; } catch (e) { DBG.push("폰트 적용 실패 [" + (spec.name || spec.id) + " " + JSON.stringify(fnt) + "]: " + e.message); }
   try { t.characters = spec.content == null ? "" : String(resolveStr(spec.content)); }
   catch (e) { DBG.push("텍스트 입력 실패 [" + (spec.name || spec.id) + " font=" + JSON.stringify(fnt) + "]: " + e.message); }
@@ -484,6 +484,9 @@ function applyOverride(node, ov) {
     else if ("fills" in node) node.fills = makePaints(ov.fill) || [];  // 프레임/텍스트/도형: 배경 fill 직접
   }
   if (ov.enabled === false) node.visible = false;
+  // 타이포 오버라이드는 아직 미적용 (부분정보 병합 문제 — Phase 3). 조용히 버리지 말고 알린다.
+  if (ov.fontFamily !== undefined || ov.fontWeight !== undefined || ov.fontSize !== undefined)
+    DBG.push("인스턴스 타이포 오버라이드 미적용 [" + (node.name || "?") + "] — 컴포넌트 정의에 바인딩 권장");
 }
 function parentLayoutOf(parent) {
   if (!parent || !("layoutMode" in parent)) return null;
@@ -599,12 +602,25 @@ function computePaths(spec, path, out) {
 }
 
 // ---- 폰트 수집 & 로드 ----
+// 프리로드 집합과 렌더(buildText)의 fontName 은 반드시 같은 인자로 resolveFont 를 불러야 한다.
+// ($변수 해석 포함 — 안 맞으면 렌더 시 t.fontName 할당이 조용히 실패해 폰트가 폴백됨)
+function textFontOf(spec) {
+  return resolveFont(
+    resolveStr(spec.fontFamily) || "Inter",
+    resolveStr(spec.fontWeight),
+    resolveStr(spec.fontStyle) === "italic"
+  );
+}
 function collectFonts(spec, set) {
-  if (spec.type === "text") {
-    const r = resolveFont(spec.fontFamily || "Inter", spec.fontWeight, spec.fontStyle === "italic");
+  if (!spec || typeof spec !== "object") return;
+  // text 노드 + descendants 오버라이드 객체(type 없음)도 폰트 속성을 가질 수 있다
+  if (spec.type === "text" || spec.fontFamily !== undefined || spec.fontWeight !== undefined) {
+    const r = textFontOf(spec);
     set.add(r.family + "||" + r.style);
   }
   for (const c of spec.children || []) collectFonts(c, set);
+  const d = spec.descendants;  // 교체 subtree/오버라이드 안의 텍스트도 프리로드 대상
+  if (d) for (const k in d) if (d[k] && typeof d[k] === "object") collectFonts(d[k], set);
 }
 async function loadFonts(allSpecs) {
   await buildFontIndex(); // 설치된 폰트 목록 먼저 확보 (resolveFont 가 이걸 참조)
@@ -701,10 +717,14 @@ async function createVariables(varData, selectedTheme, collectionName) {
           VAR_HEX[name] = rawValue;
         }
         VARS[name] = v;
-      } else if (type === "number") {
-        VAR_NUM[name] = Array.isArray(rawValue) ? (rawValue[0] && rawValue[0].value) : rawValue;
-      } else if (type === "string") {
-        VAR_STR[name] = Array.isArray(rawValue) ? (rawValue[0] && rawValue[0].value) : rawValue;
+      } else if (type === "number" || type === "string") {
+        let val = rawValue;
+        if (Array.isArray(rawValue)) {
+          // 테마 배열이면 선택 테마(modeNames[0]) 값 우선 — color 경로와 같은 기준
+          const pick = rawValue.find((e) => axisName && e && e.theme && e.theme[axisName] === modeNames[0]) || rawValue[0];
+          val = pick && pick.value;
+        }
+        (type === "number" ? VAR_NUM : VAR_STR)[name] = val;
       }
     } catch (e) { DBG.push("변수 생성 실패 " + name + ": " + (e && e.message)); }
   }
@@ -803,11 +823,13 @@ async function importDesign(data, icons, selected, pageMap, compPageMap, theme, 
   const indices = Array.isArray(selected) ? selected : allScreens.map((_, i) => i);
   const screens = indices.map((i) => allScreens[i]).filter(Boolean);
 
-  figma.ui.postMessage({ type: "progress", text: "폰트 로딩 중..." });
-  await loadFonts([].concat(allComponents, screens));
+  // 순서 중요: createVariables 가 VAR_NUM/VAR_STR 을 채워야 loadFonts 의 $변수(fontFamily 등) 해석이 된다.
+  // (createVariables 는 622행에서 VAR_* 를 리셋하므로 loadFonts 뒤로 옮기면 안 됨)
   figma.ui.postMessage({ type: "progress", text: "변수/이미지 준비 중..." });
   await createVariables(data.variables || {}, theme, collectionName);
   prepareImages(data.images || {});
+  figma.ui.postMessage({ type: "progress", text: "폰트 로딩 중..." });
+  await loadFonts([].concat(allComponents, screens));
 
   // 0) 화면 페이지 준비 (이름→PageNode)
   const pageOf = {};        // 화면 인덱스 -> PageNode

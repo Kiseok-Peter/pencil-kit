@@ -8,7 +8,7 @@ Figma 직접 연동이 없어서, Pencil MCP로 추출한 JSON을 중간 산출�
 | | 무엇에 필요 |
 |---|---|
 | **Python 3.6+** | `build.py` 등 스크립트·런처. 외부 패키지 불필요(표준 라이브러리만) — `pip install` 없음 |
-| **Pencil MCP** (Claude Code 등) | `.pen` 은 암호화되어 있어 추출·아이콘 PDF 뽑기는 MCP 로만 가능 |
+| **Pencil v1.2.2+ MCP** (Claude Code 등) | `.pen` 은 암호화되어 있어 추출·아이콘 PDF 뽑기는 MCP 로만 가능. v1.2.2 에서 MCP 도구 세트가 전면 교체됨(`get_app_state`+`execute`) — 절차는 RUNBOOK.md |
 | **Figma 데스크톱** | Figma 파이프라인에서 플러그인(`manifest.json`) 임포트용 |
 
 ## 설치
@@ -30,7 +30,7 @@ pencil/
     <프로젝트>.pen
     images/                   ← .pen 의 이미지 원본
     export/                   ← 이 프로젝트의 데이터 (아래 파일들)
-      pen-nodes.json          Pencil MCP batch_get 추출 노드 트리 (컴포넌트+화면)
+      pen-nodes.json          Pencil MCP(execute+Get) 추출 노드 트리 (컴포넌트+화면)
       variables.json          색상/숫자/문자 토큰 (light/dark)
       design-data.json        build.py 산출물 (Figma 플러그인 입력, 이미지 base64 임베드)
       SCREEN-MODULE-MAP.md     (SwiftUI) 화면→Feature 모듈 매핑 — 프로젝트별
@@ -55,7 +55,8 @@ cd pencil-kit && python3 launcher.py
 |---|---|---|
 | `launcher.py` | **통합 런처**(화살표 메뉴+탭완성) — 아래 스크립트를 감쌈 | 진입점 |
 | `build.py` | pen-nodes+variables+images → `design-data.json` | 공통 |
-| `verify.py` | export 데이터 무결성 검증(ref·절단·아이콘·변수) | 공통 |
+| `merge-nodes.py` | 부분 추출 결과(part)를 id 기준 병합 — 증분 추출 지원 | 공통 |
+| `verify.py` | export 데이터 무결성 검증(ref·절단·아이콘·변수·타이포) | 공통 |
 | `diff.py` | 지난 스냅샷 대비 변경(컴포넌트/화면/토큰 +~-) 감지 | 공통 |
 | `manifest.json` `code.js` `ui.html` | Figma 플러그인 본체 | Figma |
 | `RUNBOOK.md` | Figma 변환 절차(추출→빌드→임포트) | Figma |
@@ -79,8 +80,10 @@ python3 extract-for-swiftui.py --data ../초코로드/export "리뷰 작성"
 python3 make-icon-ids.py --data ../초코로드/export
 # 아이콘 PDF 정사각 정규화 (Asset Catalog 폴더 대상)
 python3 pad-icons.py <아이콘PDF폴더>
-# 무결성 검증 (변환 전 프리플라이트)
+# 무결성 검증 (변환 전 프리플라이트; --strict-typo = 타이포 토큰화 완료 게이트)
 python3 verify.py --data ../초코로드/export
+# 부분 추출 병합 (증분 재추출 — RUNBOOK.md 절차 5~6)
+python3 merge-nodes.py --data ../초코로드/export --inventory _inventory.json
 # 변경 감지 (재추출 후 바뀐 것만 확인) — --update 로 기준 갱신
 python3 diff.py --data ../초코로드/export
 ```

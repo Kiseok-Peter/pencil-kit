@@ -91,6 +91,12 @@ def act_build(state):
     pen = ask_path("펜프로젝트 폴더(images 위치, Tab 완성)", os.path.dirname(state["data"]))
     py("build.py", "--data", state["data"], pen)
 
+def act_merge(state):
+    if not _need_data(state): return
+    inv = os.path.join(state["data"], "_inventory.json")
+    args = ["--data", state["data"]] + (["--inventory", "_inventory.json"] if os.path.exists(inv) else [])
+    py("merge-nodes.py", *args)
+
 def act_verify(state):
     if _need_data(state): py("verify.py", "--data", state["data"])
 
@@ -119,6 +125,9 @@ MENU = [
      "작업할 프로젝트의 export 폴더를 지정합니다. 여기의 pen-nodes/variables/design-data 를 "
      "대상으로 아래 작업들이 실행됩니다. 한 번 정하면 기억됩니다."),
     ("── 공통 ──────────────", None, ""),
+    ("merge   · 부분 추출 결과 병합", act_merge,
+     "증분 추출한 pen-nodes.part*.json 들을 pen-nodes.json 에 id 기준으로 병합합니다. 절단·"
+     "끊긴 ref 를 쓰기 전에 차단하고, _inventory.json 이 있으면 삭제된 노드도 알려줘요."),
     ("build   · design-data.json 재생성", act_build,
      "pen-nodes.json + variables.json + 이미지를 합쳐 design-data.json 을 다시 만듭니다. "
      ".pen 을 추출/수정한 뒤 실행하세요. (Figma 임포트·SwiftUI 추출의 재료 파일)"),

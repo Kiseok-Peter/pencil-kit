@@ -16,7 +16,8 @@ Claude 는 **그 단계 하나만 수행한 뒤 멈춥니다.** 결과를 확인
 5. 단계 끝에 **무엇을 만들었는지 + 다음 단계 트리거**를 한 줄로 안내하고 멈춘다.
 
 ## 사전 조건
-- `pencil-kit/`(키트)와 `<프로젝트>/export/`(데이터, `design-data.json` 최신)가 있어야 함 (Pencil 을 바꿨으면 재추출 → RUNBOOK.md)
+- `pencil-kit/`(키트)와 `<프로젝트>/export/`(데이터, `design-data.json` 최신)가 있어야 함
+  (Pencil 디자인을 바꿨으면 재추출 — 절차는 `RUNBOOK.md`, 증분이면 `merge-nodes.py` 병합)
 - **Step 2(아이콘)만 Pencil 에서 `.pen` 이 열려 있어야** 함 (`export_nodes`). 나머지 단계는 MCP 불필요.
 - 아래 스크립트는 `pencil-kit/` 에서 실행하며 `--data <프로젝트>/export` 로 데이터 폴더를 가리킨다.
 
@@ -30,9 +31,11 @@ Claude 는 **그 단계 하나만 수행한 뒤 멈춥니다.** 결과를 확인
 **트리거:** "SWIFTUI-RUNBOOK Step 1: DesignSystem 토큰 만들어줘"
 **Claude 가 할 일:** `design-data.json` 의 `variables` →
 - color 변수 → Asset Catalog **Color Set(Any/Dark)** 또는 `Color` extension (light/dark 자동)
-- number 변수(`radius-*`, `spacing-*`) → 상수(enum)
-- string 변수(`font-*`) → 폰트 이름 상수
-DesignSystem 모듈에 배치하고 멈춘다. (Outfit 폰트 파일 추가 + Info.plist 등록은 TODO 로 안내)
+- number 변수(`radius-*`, `spacing-*`, `fontsize-*`, `lineheight-*`, `tracking-*`) → 상수(enum)
+- string 변수는 갈린다: `font-*`(패밀리) → **무시** (시스템 폰트 — GUIDE 고정 규칙 1) /
+  `fontweight-*` → **`Font.Weight` 매핑 상수** ("string 전부 무시" 아님. 접두 규약은 GUIDE 3-1절)
+DesignSystem 모듈에 배치하고 멈춘다.
+⚠️ **`Font.custom` 금지 · 폰트 파일/Info.plist 등록 불필요** (GUIDE 고정 규칙 1 — 커스텀 폰트를 쓰지 않는다)
 
 ## Step 2 — DesignSystem: 아이콘  ⚠️ Pencil 필요
 **트리거:** "SWIFTUI-RUNBOOK Step 2: 아이콘 PDF 뽑아서 Asset Catalog 에 넣어줘"

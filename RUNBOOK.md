@@ -27,22 +27,67 @@ pencil-kit/                  ← 이 키트 (스크립트·플러그인, 재사�
 
 ## Claude 가 따라야 할 추출 절차 (위 트리거를 받으면)
 
-> 데이터 폴더는 `<프로젝트>/export/` (없으면 만든다). 아래 `<DATA>` = 그 경로.
+> 데이터 폴더는 `<프로젝트>/export/` (없으면 만든다). 아래 `<DATA>` = 그 경로, `<PEN>` = `.pen` **절대경로**.
+> Pencil v1.2.2+ 기준 — MCP 는 `get_app_state` + `execute`(내부 `Get`/`GetVariables`) 를 쓴다.
+> `execute` 는 **`filePath`(=`<PEN>`) 가 필수**이고, 데이터를 밖으로 내는 유일한 통로는 `Print(...)` 다.
 
-1. `get_editor_state(include_schema: true)` 로 스키마 + top-level 노드 목록 확보 → 사용자에게 제시
-2. 사용자가 고른 화면(top-level 프레임) 확인
-3. **고른 화면 + 그 화면이 `ref` 로 쓰는 컴포넌트(전이 포함)** 를 `batch_get` 으로 추출
-   - `includePathGeometry: true`
-   - **`resolveVariables: false` (중요)** — 변수 참조(`$primary` 등)를 그대로 보존해야 Figma 변수 바인딩 + 다크모드 전환이 동작. `true` 면 색이 한 테마 hex 로 박제됨.
-   - `readDepth` 를 충분히 크게(예: 14). 자식이 `"..."` 로 잘리면 그 ID 로 재조회 (많으면 묶음 나눠 추출 후 병합)
-4. 추출 결과 배열을 **`<DATA>/pen-nodes.json`** 에 저장 (reusable=true 가 컴포넌트, 나머지가 화면)
-5. `get_variables` 결과를 **JSON 전체(`{themes, variables}`) 그대로** **`<DATA>/variables.json`** 에 저장
-   - 평탄화(`{이름:"#hex"}`) 금지 — 테마별(light/dark) 값 + number/string 변수 보존
-6. **`cd pencil-kit && python3 build.py --data <DATA> <펜프로젝트폴더>`** → `<DATA>/design-data.json` 생성
-   - `<펜프로젝트폴더>` = `images/` 가 있는 `.pen` 폴더 (생략 시 `<DATA>` 의 상위로 가정)
-7. "Figma 데스크톱에서 플러그인 임포트" 안내
+### ⚠️ 토큰 비용 — 기본은 증분
 
-> 추출은 **읽기 전용**이라 원본 `.pen` 을 수정하지 않습니다.
+- `execute` 는 파일을 직접 못 쓴다 → **`Print` → (에이전트 컨텍스트) → 파일 저장** 경로뿐이다.
+- **전체 재추출 1회 ≈ 120~135K 토큰** (초코로드 기준). 그래서 **기본은 바뀐 화면만 뽑아 `merge-nodes.py` 로 병합**.
+  "전부 재추출"은 사용자가 명시할 때만.
+- `execute` 는 실패 시 블록 전체 롤백 → 큰 콜 하나가 죽으면 그 데이터 전량 유실. 청크를 작게.
+- `Print` 응답 절단은 조용히 일어난다 → 파트마다 `merge-nodes.py --expect-ids` 로 대조.
+
+### 단계
+
+1. **스키마 확보 — 세션당 1회만** (응답이 커서 반복 호출 금지):
+   `get_app_state(include_schema: true, include_canvas_design: true, include_scripts_and_shaders: false, include_browser: false)`
+2. **인벤토리** (싸다 — 목록만). `execute` 로:
+   ```js
+   Get((n,c)=>{ if(c.depth===0){ Print(JSON.stringify({id:n.id,name:n.name,reusable:!!n.reusable})); c.skipChildren(); } })
+   ```
+   → 사용자에게 제시하고, 배열로 묶어 **`<DATA>/_inventory.json`** 저장 (나중에 삭제 감지용)
+3. **사이즈 프로브** (청크 계획). 대상 id 들에 대해:
+   ```js
+   for (const id of ["ID1","ID2"]) Print(JSON.stringify(Get(id,{resolveVariables:false,resolveInstances:false,includePathGeometry:true})).length, id)
+   ```
+   문자수 ÷ 4 ≈ 토큰. 개별값으로 청크 경계를 정한다.
+4. **컴포넌트 — 1콜 일괄** (초코로드 실측 52개 = 36K자 ≈ 9K 토큰):
+   ```js
+   const ids=[/* reusable 또는 필요분 */]
+   Print(JSON.stringify(ids.map(id=>Get(id,{resolveVariables:false,resolveInstances:false,includePathGeometry:true}))))
+   ```
+   → 출력을 **`<DATA>/pen-nodes.part-components.json`** 저장
+5. **화면 — 청크 반복** (청크 합계 ≤ 80K자 ≈ 20K 토큰; 더 큰 단일 화면은 그것만 1콜):
+   4와 같은 스니펫, id 만 교체 → `pen-nodes.part-01.json`, `-02.json`, …
+6. **병합**: `cd pencil-kit && python3 merge-nodes.py --data <DATA> --inventory _inventory.json`
+   - `누락 ref` 가 보고되면 그 id 들만 5 로 추가 추출 후 재실행
+   - 삭제된 노드가 보고되면 확인 후 `--prune`
+7. **변수 — 항상 전체** (3~4KB 라 증분 불필요). `execute` 로 `Print(JSON.stringify(GetVariables()))`
+   → **`{themes, variables}` 전체 그대로** `<DATA>/variables.json` 저장. 평탄화(`{이름:"#hex"}`) **금지** —
+   테마별(light/dark) 값 + number/string 변수가 소실된다. (build 보다 먼저 — hex 역복원 맵의 기준)
+8. **검증 → 빌드**:
+   ```bash
+   python3 verify.py --data <DATA> && python3 diff.py --data <DATA>
+   python3 build.py --data <DATA> <펜프로젝트폴더>   # <펜프로젝트폴더> = images/ 가 있는 .pen 폴더
+   ```
+   → `<DATA>/design-data.json` 생성 → "Figma 데스크톱에서 플러그인 임포트" 안내
+
+### `Get` 옵션 규약 (전 추출 공통)
+
+| 옵션 | 값 | 이유 |
+|---|---|---|
+| `resolveVariables` | **false (필수)** | `$변수` 보존 = Figma 변수 바인딩 + 다크모드. `true` 로 뽑으면 색은 build.py 가 hex→`$` 역복원하지만 **number/string(타이포·spacing)은 복구 경로가 없다** → 그 데이터는 폐기하고 재추출 |
+| `resolveInstances` | **false (항상 명시)** | `ref`+`descendants` 구조 유지. `true` 면 인스턴스가 전개돼 용량 폭발 + 컴포넌트 재사용 소실 |
+| `includePathGeometry` | true | 벡터 패스 보존 |
+| `depth` | 기본(전체) 또는 30 | 자식이 `"..."` 로 잘리면 depth 부족 — **그 id 만** 재조회 (merge 가 upsert) |
+
+> 추출은 **읽기 전용 함수만** 쓴다(`Get`/`GetVariables`/`Print`). `execute` 는 쓰기(`Insert`/`Update`/`SetVariables`…)도
+> 할 수 있으므로, 디자인 변경은 사용자가 명시 요청할 때만.
+
+> **한계**: Figma 플러그인은 현재 **color 변수만** Figma Variables 로 만든다. number/string 토큰(타이포·spacing)은
+> 렌더 시 값으로 인라인된다(계산은 정확, 바인딩만 없음). Figma 측 number/string 변수 생성+바인딩은 추후 과제.
 
 ---
 
@@ -50,7 +95,7 @@ pencil-kit/                  ← 이 키트 (스크립트·플러그인, 재사�
 
 | 단계 | 실행 위치 | 필요한 것 |
 |---|---|---|
-| 1. 추출 (`.pen` → `export/pen-nodes.json`, `variables.json`) | **프로젝트 컴퓨터** | Pencil 앱 + Claude Code(Pencil MCP) |
+| 1. 추출 (`.pen` → `export/pen-nodes.json`, `variables.json`) | **프로젝트 컴퓨터** | Pencil 앱(v1.2.2+) + Claude Code — MCP `get_app_state` / `execute`(`Get`·`GetVariables`) |
 | 2. 빌드 (`build.py` → `export/design-data.json`) | 아무 컴퓨터 | Python 3 (macOS면 `sips` 자동) |
 | 3. 임포트 (`design-data.json` → Figma) | Figma 쓰는 컴퓨터 | Figma **데스크톱** 앱 |
 
@@ -69,7 +114,7 @@ Pencil 에서 `.pen` 을 열고:
 
 > "pencil-kit 으로 이 Pencil 프로젝트를 Figma로 변환할 거야. top-level 노드 목록 보여주고, 내가 고른 것만 `초코로드/export` 에 추출해줘."
 
-→ Claude 가 위 "추출 절차" 1~5 수행 (읽기 전용). 이미지는 `.pen` 의 `images/` 에 이미 있어 별도 추출 불필요.
+→ Claude 가 위 "추출 절차" 1~7 수행 (읽기 전용). 이미지는 `.pen` 의 `images/` 에 이미 있어 별도 추출 불필요.
 
 ### 2) 빌드
 ```bash
@@ -99,6 +144,7 @@ python3 build.py --data ../초코로드/export ../초코로드   # --data=export
 - 폰트 어긋남 → 해당 Google Font 가 Figma 에 있는지 확인 (Outfit/Inter 기본 제공).
 - 한글 이상 → `code.js` 의 `resolveFont` 폴백을 한글 폰트로 조정.
 - 레이아웃 깨짐 → Pencil `get_screenshot` 과 대조, 플러그인 로그의 노드 크기 확인.
+  레이아웃 수치 검증은 `execute` 의 `Get` 방문자에서 `ctx.bounds`/`ctx.problems` 로 (구 스냅샷 전용 도구는 v1.2.2 에서 제거됨).
 
 ## 한 줄 요약
 **추출(읽기 전용) → `export/design-data.json` 자체 완결 → 그 파일 + 플러그인만 들고 Figma 컴퓨터에서 임포트.**

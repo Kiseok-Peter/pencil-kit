@@ -36,7 +36,9 @@ def main():
     out = os.path.join(DATA, "_icon_ids.json")
     json.dump(rep, open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     print(f"고유 아이콘 {len(rep)}종 -> {out}")
-    print("다음: Claude 가 각 노드ID 를 export_nodes(format='pdf') 로 추출 후, 이 맵으로 '아이콘이름.pdf' 로 rename → pad-icons.py")
+    print("다음: Claude 가 각 노드ID 를 export_nodes(filePath, outputDir, nodeIds, format='pdf') 로 추출 후,")
+    print("      이 맵으로 '아이콘이름.pdf' 로 rename → pad-icons.py")
+    print("      (filePath 필수. PDF 는 여러 nodeIds 를 1파일로 합치므로 아이콘당 1회 호출)")
 
 if __name__ == "__main__":
     main()

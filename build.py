@@ -59,7 +59,10 @@ def collect(nodes):
     icon_list = [{"library": lib, "icon": name} for (lib, name) in sorted(icons.keys())]
     return icon_list, sorted(images)
 
-# ---- raw hex -> $변수 역복원 (resolveVariables:true 로 박제된 색 복구) ----
+# ---- raw hex -> $변수 역복원 ----
+# (구) resolveVariables:true 로 뽑혀 hex 로 박제된 색을 복구하는 하위호환 경로.
+# 현행 절차(RUNBOOK)는 resolveVariables:false 필수 — 이 경우 이 맵은 사실상 no-op.
+# ※ 색만 복구 가능. number/string(타이포·spacing) 토큰은 역복원 경로가 없다.
 def build_color_map(variables_full):
     """light hex(대문자) -> 변수명. 전체형식 {themes,variables} / 평탄형식 {name:hex} 모두 지원."""
     defs = variables_full.get("variables", variables_full) if isinstance(variables_full, dict) else {}
