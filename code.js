@@ -372,7 +372,33 @@ function recolor(node, fillSpec) {
 }
 
 // ---- 아이콘 빌드 (lucide/feather/phosphor 등) ----
-function iconKey(lib, name, w, h) { return lib + "/" + name + "@" + w + "x" + h; }
+// 마스터 키: 기본은 아이콘당 1개(단일 마스터 — 실무 라이브러리 표준). outlineStroke 미지원 환경만 크기별.
+function iconKey(lib, name, w, h) {
+  return CAP.iconOutline !== false ? lib + "/" + name : lib + "/" + name + "@" + w + "x" + h;
+}
+const ICON_BASE = 24;   // 단일 마스터 기준 크기 (lucide 원본 viewBox)
+
+// 단일 마스터 생성: 24px 로 정규화 후 **선을 면으로 굽는다(outlineStroke)**.
+// 이유: 인스턴스 리사이즈는 constraints 스케일이라 live stroke 의 굵기(strokeWeight)를 스케일하지 않는다 —
+// 굽지 않으면 14px 아이콘이 2px 선 그대로 뚱뚱해진다. 구우면 기하 전체가 비례 스케일되어
+// 기존 rescale 방식과 렌더가 동일해진다.
+function makeIconMaster(lib, name) {
+  const frame = makeIconFrame({ library: lib, icon: name, width: ICON_BASE, height: ICON_BASE });
+  if (!frame) return null;
+  const vecs = [];
+  (function g(n) { for (const c of n.children || []) { vecs.push(c); g(c); } })(frame);
+  for (const v of vecs) {
+    try {
+      if (typeof v.outlineStroke === "function" && v.strokes && v.strokes.length) {
+        const o = v.outlineStroke();
+        if (o) { const p = v.parent, i = p.children.indexOf(v); p.insertChild(i, o); v.remove(); }
+      }
+    } catch (e) {}
+  }
+  // 리사이즈 시 자식이 비례 스케일되도록
+  (function s(n) { for (const c of n.children || []) { try { c.constraints = { horizontal: "SCALE", vertical: "SCALE" }; } catch (e) {} s(c); } })(frame);
+  return frame;
+}
 
 // SVG → 프레임 (기하만 — 이름·색·플러그인데이터는 호출자 몫).
 // 아이콘 마스터와 일반(폴백) 경로가 문자 그대로 같은 기하를 쓰도록 분리해 둔다.
@@ -396,7 +422,11 @@ function buildIcon(spec) {
       && typeof spec.width === "number" && typeof spec.height === "number") {
     const comp = ICON_COMP[iconKey(spec.library || "lucide", spec.icon, spec.width, spec.height)];
     if (comp) { try { node = comp.createInstance(); } catch (e) { node = null; } }
-    // 마스터가 이미 해당 크기로 만들어져 있으므로 rescale 하지 않는다 (인스턴스 자식 기하 변경은 금지 가능성)
+    // 인스턴스에 rescale 은 걸지 않는다(자식 기하 변경 금지 가능성). 크기는 resize 로 —
+    // 단일 마스터(24px, 외곽선화+SCALE constraints)는 resize 가 비례 스케일이 된다.
+    if (node && CAP.iconOutline !== false) {
+      try { node.resize(Math.max(1, spec.width), Math.max(1, spec.height)); } catch (e) {}
+    }
   }
   if (!node) {
     node = makeIconFrame(spec);
@@ -449,6 +479,7 @@ function collectIconSlots(allComponents, allScreens) {
 // 모든 아이콘이 인스턴스가 되어 라이브러리 페이지가 완성되고, SVG 파싱도 배치 수 → 조합 수로 줄어든다.
 // 크기별로 따로 만든다 — 같은 크기끼리만 스왑하면 인스턴스 리사이즈가 아예 필요 없어진다.
 async function buildIconComponents(allComponents, allScreens, offsets) {
+  const single = CAP.iconOutline !== false;   // 단일 마스터 모드 (기본) vs 크기별 폴백
   const need = {};   // key -> {library, icon, width, height}
   const add = (lib, name, w, h) => {
     if (!ICONS[lib + "/" + name] && !ICONS[name]) return;   // SVG 없으면 마스터 안 만듦 (빈 마스터 = 아이콘 소멸)
@@ -483,9 +514,9 @@ async function buildIconComponents(allComponents, allScreens, offsets) {
   const PITCH = 60, PER_ROW = 10;
   keys.forEach((k, i) => {
     const d = need[k];
-    const frame = makeIconFrame(d);
+    const frame = single ? makeIconMaster(d.library, d.icon) : makeIconFrame(d);
     if (!frame) return;
-    frame.name = "icon/" + d.icon + "/" + d.width;
+    frame.name = single ? "icon/" + d.icon : "icon/" + d.icon + "/" + d.width;
     let comp;
     try { comp = figma.createComponentFromNode(frame); }
     catch (e) { DBG.push("아이콘 마스터 생성 실패 " + k + ": " + (e && e.message)); try { frame.remove(); } catch (e2) {} return; }
@@ -533,6 +564,34 @@ async function probeIconSwap() {
     const tmp = [wi, w, a, b];
     for (const n of tmp) if (n) { try { n.remove(); } catch (e) {} }
   }
+  await probeIconOutline();
+}
+
+// outlineStroke(선→면 굽기) 지원 여부 → 단일 마스터 모드 결정. 미지원이면 크기별 마스터로 폴백.
+async function probeIconOutline() {
+  if (CAP["ov.icon"] === false) { CAP.iconOutline = false; return; }   // 스왑 자체가 안 되면 마스터도 없다
+  let f = null, o = null;
+  try {
+    let sample = null;
+    for (const k in ICONS) { sample = ICONS[k]; break; }
+    if (!sample) { CAP.iconOutline = false; return; }   // 아이콘 없는 디자인 — 모드 무의미
+    f = figma.createNodeFromSvg(sample);
+    const vs = [];
+    (function g(n) { if (n.type === "VECTOR") vs.push(n); for (const c of n.children || []) g(c); })(f);
+    let ok = false;
+    if (vs.length && typeof vs[0].outlineStroke === "function") {
+      o = vs[0].outlineStroke();
+      ok = !!o;
+    }
+    CAP.iconOutline = ok;
+    DBG.push("아이콘 외곽선화 프로브: " + (ok ? "지원 → 아이콘당 단일 마스터(24px)" : "미지원 → 크기별 마스터로 폴백"));
+  } catch (e) {
+    CAP.iconOutline = false;
+    DBG.push("아이콘 외곽선화 프로브: 예외(" + (e && e.message) + ") → 크기별 마스터로 폴백");
+  } finally {
+    if (o) { try { o.remove(); } catch (e) {} }
+    if (f) { try { f.remove(); } catch (e) {} }
+  }
 }
 
 // 아이콘 슬롯 인스턴스의 마스터를 교체한다. 실패·불일치는 전부 되돌리고 집계 — 시각 회귀 0.
@@ -557,6 +616,8 @@ function swapIcon(node, slot, iconName) {
     if (s.revert >= 3 && s.ok === 0) { CAP["ov.icon"] = false; DBG.push("아이콘 스왑 중단 — 되돌림 3회, 성공 0"); }
     return false;
   }
+  // 단일 마스터(24px)로 스왑되면 크기가 마스터 기준으로 갈 수 있어 슬롯 크기를 재확정 (크기별 모드에선 no-op)
+  try { node.resize(slot.width, slot.height); } catch (e) {}
   stat("ov.icon", "ok");
   return true;
 }

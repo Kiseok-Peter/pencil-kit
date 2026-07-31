@@ -118,7 +118,7 @@ function synthIcons(designData) {
 // extra: {icons(합성 SVG 맵 오버라이드), swap(스텁 스왑 모델), pluginData, iconSwap(false=아이콘 인스턴스화 끔)}
 async function runImport(designData, behavior, fonts, bindTokens, seed, extra) {
   extra = extra || {};
-  const stub = createFigmaStub({ behavior: behavior, fonts: fonts, seed: seed, swap: extra.swap, pluginData: extra.pluginData });
+  const stub = createFigmaStub({ behavior: behavior, fonts: fonts, seed: seed, swap: extra.swap, outline: extra.outline, pluginData: extra.pluginData });
   const api = loadCode(stub.figma);
   const icons = extra.icons !== undefined ? extra.icons : synthIcons(designData);
   const opts = { bindTokens: bindTokens };
@@ -170,10 +170,12 @@ function iconOverrideStats(designData) {
 }
 
 // 기대 마스터 키 집합 — code.js 의 buildIconComponents 수집 로직을 데이터에서 그대로 재현
-function expectedMasterKeys(designData, iconsMap) {
+// single=true(기본): 아이콘당 1개(외곽선화 단일 마스터) / false: 크기별 폴백
+function expectedMasterKeys(designData, iconsMap, single) {
+  if (single === undefined) single = true;
   const has = (lib, n) => iconsMap[lib + "/" + n] !== undefined || iconsMap[n] !== undefined;
   const keys = new Set();
-  const add = (lib, n, w, h) => { if (has(lib, n)) keys.add(lib + "/" + n + "@" + w + "x" + h); };
+  const add = (lib, n, w, h) => { if (has(lib, n)) keys.add(single ? lib + "/" + n : lib + "/" + n + "@" + w + "x" + h); };
   const walk = (n) => {
     if (!n || typeof n !== "object") return;
     if (n.type === "icon" && n.icon && typeof n.width === "number" && typeof n.height === "number")
@@ -483,8 +485,8 @@ function section(t) { console.log("\n" + t); }
       delete icons["lucide/search"];         // 슬롯 기본 (Empty State 48px) → 슬롯 통째 포기되어야 함
       const r = await runImport(designData, "honest", FULL_FONTS, true, 7, { icons: icons });
       const keys = Object.keys(r.state.ICON_COMP);
-      check("SVG 없는 아이콘의 마스터 미생성", keys.every((k) => k.indexOf("/circle-alert@") < 0 && k.indexOf("/search@") < 0),
-        keys.filter((k) => k.indexOf("/circle-alert@") >= 0 || k.indexOf("/search@") >= 0).join(","));
+      const hit = (k) => k === "lucide/circle-alert" || k === "lucide/search" || k.indexOf("/circle-alert@") >= 0 || k.indexOf("/search@") >= 0;
+      check("SVG 없는 아이콘의 마스터 미생성", keys.every((k) => !hit(k)), keys.filter(hit).join(","));
       const bs = r.state.BIND_STAT["ov.icon"] || { ok: 0, skip: 0, error: 0, revert: 0 };
       check("영향받은 오버라이드만 건너뜀 (성공 " + bs.ok + " + 건너뜀 " + bs.skip + " = " + st.total + ", 예외 0)",
         bs.ok + bs.skip === st.total && bs.error === 0 && bs.revert === 0 && bs.skip > 0);
@@ -500,7 +502,8 @@ function section(t) { console.log("\n" + t); }
       for (const pg of r.stub.figma.root.children) rawFind(pg, (n) => n.type === "FRAME" && n.name === "Status Change Error Toast", toasts);
       const inst = toasts.length ? rawFind(toasts[0], (n) => n.type === "INSTANCE" && n._icon === "circle-alert", []) : [];
       const vecs = inst.length ? rawFind(inst[0], (n) => n.type === "VECTOR", []) : [];
-      const paint = vecs.length && vecs[0].strokes && vecs[0].strokes[0];
+      // 외곽선화된(면) 아이콘은 fills, live stroke 아이콘은 strokes — 어느 쪽이든 재색칠돼야 한다
+      const paint = vecs.length && ((vecs[0].strokes && vecs[0].strokes[0]) || (vecs[0].fills && vecs[0].fills[0]));
       check("lossy: 스왑된 토스트 아이콘이 재색칠됨 (검정 아님)", !!paint && !(paint.color.r === 0 && paint.color.g === 0 && paint.color.b === 0),
         JSON.stringify(paint && paint.color));
       check("lossy: 재색칠에 색 변수 바인딩 존재 ($primary)", !!(paint && paint.boundVariables));
@@ -513,6 +516,21 @@ function section(t) { console.log("\n" + t); }
       }
       check("pluginData 미상속이어도 아이콘에 단색 fills 없음 (색 블록 증상 0, ICON_SLOTS 판별)", blocks.length === 0,
         blocks.slice(0, 3).map((n) => n.name).join(","));
+    }
+
+    section("V13 외곽선화 미지원 폴백 (크기별 마스터)");
+    {
+      const r = await runImport(designData, "honest", FULL_FONTS, true, 7, { outline: "fail" });
+      const exp = expectedMasterKeys(designData, synthIcons(designData), false);
+      check("크기별 마스터로 폴백 (" + Object.keys(r.state.ICON_COMP).length + "/" + exp.size + ")",
+        Object.keys(r.state.ICON_COMP).length === exp.size);
+      const bs = r.state.BIND_STAT["ov.icon"] || { ok: 0, revert: 0, error: 0 };
+      check("폴백 모드에서도 스왑 " + bs.ok + "/" + st.total, bs.ok === st.total && bs.error === 0 && bs.revert === 0);
+      const exp2 = expectedScreenIcons(designData);
+      const obs2 = observedScreenIcons(r.tree, screenNames);
+      let bad2 = 0;
+      for (const nm in exp2) if (JSON.stringify(exp2[nm]) !== JSON.stringify(obs2[nm] || [])) bad2++;
+      check("폴백 모드에서도 전 화면 아이콘 일치", bad2 === 0, bad2 + "개 화면 불일치");
     }
   }
 

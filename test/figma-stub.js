@@ -64,6 +64,7 @@ function createFigmaStub(opts) {
   opts = opts || {};
   const behavior = opts.behavior || "honest";
   const swapMode = opts.swap || "ok";              // 인스턴스 스왑 모델: ok | throw | noop | lossy
+  const outlineMode = opts.outline || "ok";        // outlineStroke 모델: ok | fail(null 반환 → 크기별 폴백)
   const inheritPluginData = opts.pluginData !== "notInherited";
   const fonts = opts.fonts || FULL_FONTS;
   const rng = makeRng(opts.seed == null ? 12345 : opts.seed);
@@ -131,6 +132,16 @@ function createFigmaStub(opts) {
       });
     }
     if (type === "TEXT") n.fontName = { family: "Inter", style: "Regular" };
+    if (type === "VECTOR") {
+      n.constraints = { horizontal: "MIN", vertical: "MIN" };
+      n.outlineStroke = () => {
+        if (outlineMode === "fail") return null;
+        const o = makeNode("VECTOR", n.name);
+        o.fills = [{ type: "SOLID", color: { r: 0, g: 0, b: 0 }, opacity: 1 }];
+        o.strokes = [];
+        return o;   // 실제 API 처럼 트리에 붙이지 않고 반환 (호출자가 insert)
+      };
+    }
     if (HAS_CHILDREN[type]) n.children = [];
     if (type === "PAGE") n.name = name || "Page";
 
@@ -165,7 +176,14 @@ function createFigmaStub(opts) {
         if (comp._icon) n._icon = comp._icon;
         if (swapMode === "lossy") {
           // 스왑이 서브레이어 색 오버라이드를 보존하지 못하는 모델 — 재색칠 필요성을 증명
-          const wipe = (m) => { if (m.type === "VECTOR") m.strokes = [{ type: "SOLID", color: { r: 0, g: 0, b: 0 }, opacity: 1 }]; (m.children || []).forEach(wipe); };
+          const black = { type: "SOLID", color: { r: 0, g: 0, b: 0 }, opacity: 1 };
+          const wipe = (m) => {
+            if (m.type === "VECTOR") {
+              if (m.strokes && m.strokes.length) m.strokes = [black];
+              if (m.fills && m.fills.length) m.fills = [black];   // 외곽선화된(면) 아이콘도 오염
+            }
+            (m.children || []).forEach(wipe);
+          };
           n.children.forEach(wipe);
         }
       };
