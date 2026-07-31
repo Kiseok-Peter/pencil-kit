@@ -102,10 +102,12 @@ UI 의 **"토큰 바인딩"** 체크박스를 끄면 색 변수만 만들고 나
 | `gap` `padding` `strokeWidth` | `itemSpacing` / `padding*` / `strokeWeight` | FLOAT | 배관만 완료 — `.pen` 이 토큰화되면 자동 작동 |
 | `lineHeight` | — | — | **바인딩 불가**(아래) |
 
-**Figma Plugin API 제약 (실측·문서 확인)**
-- `lineHeight` 에 number 변수를 걸면 **단위가 PIXELS 로 강제**된다. Pencil 의 `lineHeight` 는 배수(1.5)라 1.5px 이 되어버린다. 우회 방법이 없어 **영구 제외** — 변수는 만들되 `description` 으로 오용을 막고 렌더는 `PERCENT` 리터럴로 한다.
-- `fontWeight` 는 `TextNode` 에서 **읽기 전용 number**(`fontName.style` 로만 실제 변경). number 변수 바인딩이 캔버스에 반영되지 않는다는 보고가 있어, 플러그인은 `fontName` 을 리터럴로 먼저 정확히 세팅한 뒤 바인딩을 덧붙인다 → 반영되든 무시되든 **시각은 동일**하고 Dev Mode 에는 토큰이 뜬다. 실제 반영 여부는 실행 로그의 `바인딩 프로브:` 줄에 나온다.
+**Figma Plugin API 제약 (Figma 데스크톱 실측 — 2026-07)**
+- `lineHeight` 에 number 변수를 걸면 **단위가 PIXELS 로 강제**된다. 프로브 실측: `{"unit":"PIXELS","value":1.5}` — Pencil 의 `lineHeight` 는 배수(1.5)라 그대로 **1.5px** 이 된다. 우회 방법이 없어 **영구 제외**: 변수는 만들되 `description` 으로 오용을 막고 렌더는 `PERCENT` 리터럴로 한다.
+- `fontWeight` 는 `TextNode` 에서 **읽기 전용 number**(`fontName.style` 로만 실제 변경)지만, **FLOAT 변수 바인딩은 캔버스에 정상 반영된다**(프로브 `fontWeight=존중`). "number 변수는 무시된다"는 포럼 보고는 사실이 아니다. 그래도 플러그인은 `fontName` 을 리터럴로 먼저 세팅한 뒤 바인딩을 덧붙인다 — 환경이 달라도 시각이 깨지지 않도록.
 - `boundVariables` 의 **텍스트 필드 값은 배열**(`boundVariables.fontSize[0].id`), 노드 필드는 단일 별칭.
+- **모드(테마) 개수는 Figma 플랜 제한을 받는다.** 무료/스타터는 컬렉션당 1개라 `모드 추가 실패(dark)` 경고와 함께 **light 값만** 저장된다(렌더는 정상, Figma 안에서 다크 전환만 불가). 우회: 테마를 `dark` 로 고르고 **컬렉션명을 다르게** 해서 한 번 더 임포트 → 컬렉션 2개로 분리.
+- 폰트 자체에 없는 스타일은 만들어지지 않는다. 예로 **Outfit 에는 이탤릭 컷이 없어** `fontStyle:"italic"` 이 정체로 렌더된다 — 플러그인 문제가 아니므로 `.pen` 쪽에서 정리하는 게 맞다.
 
 **안전 설계**: 모든 바인딩은 리터럴을 정확히 대입한 **뒤에** 시도하고, 직후 같은 속성을 다시 읽어 어긋나면 즉시 언바인딩 + 리터럴 복구한다. 최악의 경우에도 결과물이 바인딩 없는 것과 동일하다 — `node test/verify-bindings.js` 가 이를 기계적으로 증명한다.
 
