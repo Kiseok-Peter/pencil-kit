@@ -135,7 +135,7 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 
 ## 5) 아이콘 → **Pencil PDF 추출** (권장)
 
-이 프로젝트 아이콘 65종은 전부 **lucide(오픈소스)** 입니다. 하지만 가장 충실한 방법은
+이 프로젝트 아이콘 70종은 전부 **lucide(오픈소스)** 입니다. 하지만 가장 충실한 방법은
 **Pencil이 렌더한 그대로 PDF로 추출**하는 것입니다 (Figma·SVG 불필요, 벡터 안정적).
 
 **아이콘 PDF 추출은 `.pen`/Pencil MCP 가 있는 컴퓨터에서** 수행 (iOS 프로젝트 셋업 때 함께). 절차:
