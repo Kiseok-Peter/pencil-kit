@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # 추출 데이터 무결성 검증 (Figma 임포트/SwiftUI 생성 전 프리플라이트)
-# 사용법: python3 verify.py --data <데이터폴더> [--strict-typo] [--strict-tokens]
+# 사용법: python3 verify.py --data <데이터폴더> [--strict-typo] [--strict-tokens] [--strict-dims]
 #   (--data 생략 시 CWD / env PENCIL_DATA)
 # 검사: ref 해소 / 절단(...) / 아이콘 라이브러리 / 변수 참조 정의 여부 / 타이포 변수 타입
 # 경고: 타이포 리터럴 커버리지(+분포) / 토큰 이름 버킷 — --strict-* 로 하드 실패 승격
@@ -23,6 +23,7 @@ def _pop_data(argv):
 
 STRICT_TYPO, ARGV = _pop_flag(sys.argv[1:], "--strict-typo")
 STRICT_TOKENS, ARGV = _pop_flag(ARGV, "--strict-tokens")
+STRICT_DIMS, ARGV = _pop_flag(ARGV, "--strict-dims")
 DATA, _ = _pop_data(ARGV)
 DATA = os.path.abspath(DATA)
 SUPPORTED_ICON_LIBS = {"lucide", "feather", "phosphor",
@@ -36,7 +37,11 @@ TYPO_NUM_KEYS = ("fontSize", "lineHeight", "letterSpacing")
 # 토큰 이름 버킷: iOS Scripts/gen-design-tokens.py 가 name.partition("-") 의 첫 조각으로 분류하고
 # 미등록 버킷은 ValueError. 예: font-size-body ❌ / fontsize-app-title ✅
 # (color 토큰은 자유 — 이 규칙은 number/string 토큰에만 적용)
-TOKEN_BUCKETS = {"radius", "spacing", "fontsize", "fontweight", "lineheight", "tracking", "font"}
+TOKEN_BUCKETS = {"radius", "spacing", "fontsize", "fontweight", "lineheight", "tracking", "font", "border"}
+
+# 치수(레이아웃) 토큰화 커버리지 — 타이포와 같은 범위(카탈로그 제외)에서 리터럴을 센다.
+# 화이트리스트: 0(토큰 불필요 — "없음"의 표현), padding 21(단발 광학치, 디자인 검토 후보로 문서화됨)
+DIM_WHITELIST_PAD = {0, 21}
 
 # 변수 참조 판별: $ 뒤 소문자 시작 kebab (텍스트 내용의 "$5" 같은 값 오인 방지)
 _VAR_RE = re.compile(r"^\$[a-z][a-z0-9-]*$")
@@ -144,13 +149,42 @@ def main():
                 collect_var_refs(v, var_refs)
     walk(nodes, check)
 
-    # 타이포 집계 — 대상 범위만 (컴포넌트 + 제품 화면)
+    # 타이포 + 치수 집계 — 대상 범위만 (컴포넌트 + 제품 화면)
+    dim_lit = {"gap": 0, "padding": 0, "cornerRadius": 0, "strokeWidth": 0}
+    dim_dist = {k: {} for k in dim_lit}
+    def _num(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+    def tally_dims(n):
+        def hit(key, v, white=()):
+            if _num(v) and v not in white:
+                dim_lit[key] += 1
+                dim_dist[key][v] = dim_dist[key].get(v, 0) + 1
+        hit("gap", n.get("gap"), (0,))
+        p = n.get("padding")
+        if isinstance(p, list):
+            for x in p:
+                hit("padding", x, DIM_WHITELIST_PAD)
+        else:
+            hit("padding", p, DIM_WHITELIST_PAD)
+        cr = n.get("cornerRadius")
+        if isinstance(cr, list):
+            for x in cr:
+                hit("cornerRadius", x, (0,))
+        else:
+            hit("cornerRadius", cr, (0,))
+        sw = n.get("strokeWidth")
+        if isinstance(sw, dict):
+            for x in sw.values():
+                hit("strokeWidth", x, (0,))
+        else:
+            hit("strokeWidth", sw, (0,))
     def typo_check(n):
         if n.get("type") == "text":
             text_total[0] += 1
             tally_typo(n, is_override=False)
         elif "type" not in n and any(k in n for k in TYPO_STR_KEYS + TYPO_NUM_KEYS):
             tally_typo(n, is_override=True)   # descendants 오버라이드 객체 (type 없음 = 속성 오버라이드)
+        tally_dims(n)                          # 치수는 노드 종류 무관 (frame·rect·오버라이드 전부)
     scope_n = 0
     for n in nodes:
         if isinstance(n, dict) and typo_scope(n):
@@ -218,6 +252,16 @@ def main():
     warn(not bad_buckets,
          f"토큰 버킷 규약 밖 이름 {len(bad_buckets)}개: {bad_buckets} — iOS gen-design-tokens.py 가 첫 하이픈 앞({sorted(TOKEN_BUCKETS)})만 인식",
          strict=STRICT_TOKENS)
+    # 치수 토큰화 커버리지 (--strict-dims = 치수 Phase 완료 게이트. 0 과 padding 21 은 화이트리스트)
+    dims_ok = all(v == 0 for v in dim_lit.values())
+    warn(dims_ok, "치수 토큰화 미완: " + " · ".join(f"{k} 리터럴 {v}" for k, v in dim_lit.items()),
+         strict=STRICT_DIMS)
+    if dims_ok:
+        print("     (치수 리터럴 0 — gap·padding·cornerRadius·strokeWidth 전부 토큰)")
+    else:
+        for k, d in dim_dist.items():
+            if d:
+                print(f"     {k} 분포: " + " ".join(f"{v}:{c}" for v, c in sorted(d.items(), key=lambda x: -x[1])[:12]))
 
     tail = f" (경고 {warns}건)" if warns else ""
     print("결과: " + (("✅ 이상 없음 — 변환 진행 가능" + tail) if issues == 0 else f"❌ 문제 {issues}종 — 위 항목 확인{tail}"))

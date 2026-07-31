@@ -99,7 +99,7 @@ UI 의 **"토큰 바인딩"** 체크박스를 끄면 색 변수만 만들고 나
 | `fontWeight` | `fontWeight` | **FLOAT** | Pencil 은 string `"600"`, Figma 는 number 를 요구 → 플러그인이 `600` 으로 변환 생성 |
 | `letterSpacing` | `letterSpacing` | FLOAT | Pencil·Figma 모두 px |
 | `cornerRadius` | `cornerRadius` / per-side | FLOAT | |
-| `gap` `padding` `strokeWidth` | `itemSpacing` / `padding*` / `strokeWeight` | FLOAT | 배관만 완료 — `.pen` 이 토큰화되면 자동 작동 |
+| `gap` `padding` `strokeWidth` | `itemSpacing` / `padding*` / `strokeWeight`(+면별) | FLOAT | 치수 토큰화 완료로 실작동 (`spacing-*`/`border-*`) |
 | `lineHeight` | — | — | **바인딩 불가**(아래) |
 
 **Figma Plugin API 제약 (Figma 데스크톱 실측 — 2026-07)**

@@ -83,7 +83,7 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 
 `variables`는 `{themes:{mode:[light,dark]}, variables:{name:{type, value:[{theme,value}]}}}` 구조.
 - **color** 변수 → Asset Catalog의 Color Set(Any/Dark 두 값) 또는 `Color` extension
-- **number** 변수(`radius-*`, `spacing-*`, `fontsize-*`, `lineheight-*`, `tracking-*`) → 상수(`enum Spacing { static let md=16.0 }` 류)
+- **number** 변수(`radius-*`, `spacing-*`, `border-*`, `fontsize-*`, `lineheight-*`, `tracking-*`) → 상수(`enum DSSpacing { static let s16=16.0 }` 류)
 - **string** 변수는 둘로 갈린다:
   - `font-body`/`font-heading`/`font-system` (패밀리) → **무시** (고정 규칙 1. 폰트 이름 상수 만들지 않음)
   - `fontweight-*` (값 "400"~"700") → **소비** — `Font.Weight` 매핑 상수로 ("string 전부 무시" 아님!)
@@ -102,6 +102,19 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 > 이름 규칙: iOS `Scripts/gen-design-tokens.py` 가 **첫 하이픈 앞** 세그먼트로 버킷을 분류한다
 > (`name.partition("-")`). `font-size-body` 는 버킷이 `font` 로 잡혀 **에러** — `fontsize-body` 처럼 붙여 쓴다.
 > `fontweight-*` 를 number 로 만들면 Pencil 이 타입 에러로 거부한다(string 필수).
+
+### 3-2) 치수 토큰 접두 규약 (치수 토큰화 Phase 에서 도입)
+
+| 접두 | 타입 | 명명 | 예 | SwiftUI |
+|---|---|---|---|---|
+| `spacing-` | number | **값 기반** (`spacing-<값>`) | `spacing-16: 16` | `gap`→stack `spacing:`, `padding`→`.padding()` |
+| `radius-` | number | t-shirt(구) + 값 기반(신) 혼재 | `radius-md: 12`, `radius-18: 18` | `.cornerRadius()` / `RoundedRectangle` |
+| `border-` | number | 시맨틱 | `border-thin: 1`, `border-thick: 2` | `.stroke(lineWidth:)` / `.border()` |
+
+> `spacing-xs/sm/md/lg/xl` 5개는 **미사용 레거시**다(값 기반 신설 전 선언만 있었음) — 생성기에서 건너뛰거나
+> 값 기반과 함께 생성해도 무방하나, 화면 데이터는 값 기반만 참조한다.
+> `padding` 의 `0` 과 `21`(1곳, 광학 보정)은 의도적으로 리터럴 — 토큰 매핑에서 제외.
+> `strokeWidth` 는 면별 dict(`{top:"$border-thin"}`)로도 온다 — per-side `.overlay` 로 처리.
 
 ## 4) 컴포넌트 → 재사용 View
 
