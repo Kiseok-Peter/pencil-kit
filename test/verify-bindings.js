@@ -169,6 +169,30 @@ function iconOverrideStats(designData) {
   return { total: total, changed: changed, masters: need.size, slots: slots, perSlot: perSlot };
 }
 
+// 기대 마스터 키 집합 — code.js 의 buildIconComponents 수집 로직을 데이터에서 그대로 재현
+function expectedMasterKeys(designData, iconsMap) {
+  const has = (lib, n) => iconsMap[lib + "/" + n] !== undefined || iconsMap[n] !== undefined;
+  const keys = new Set();
+  const add = (lib, n, w, h) => { if (has(lib, n)) keys.add(lib + "/" + n + "@" + w + "x" + h); };
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (n.type === "icon" && n.icon && typeof n.width === "number" && typeof n.height === "number")
+      add(n.library || "lucide", n.icon, n.width, n.height);
+    for (const c of n.children || []) walk(c);
+    const d = n.descendants;
+    if (d) for (const k in d) if (d[k] && typeof d[k] === "object") walk(d[k]);
+  };
+  for (const c of designData.components || []) walk(c);
+  for (const s of designData.screens || []) walk(s);
+  const st = iconOverrideStats(designData);
+  for (const pid in st.perSlot) {
+    const s = st.slots[pid];
+    if (!has(s.lib, s.icon)) continue;   // 슬롯 기본 SVG 없으면 슬롯 포기 → 후보 마스터도 없음
+    for (const cand of st.perSlot[pid]) add(s.lib, cand, s.w, s.h);
+  }
+  return keys;
+}
+
 // 화면별 기대 아이콘 멀티셋 — ref 를 재귀 전개하고 오버라이드·교체를 반영
 function expectedScreenIcons(designData) {
   const comps = {};
@@ -395,7 +419,7 @@ function section(t) { console.log("\n" + t); }
   if (designData) {
     const st = iconOverrideStats(designData);
     const screenNames = new Set((designData.screens || []).map((s) => s.name));
-    section("V7 아이콘 폭발 반경 (마스킹 차분) — 실측 기대: 오버라이드 " + st.total + " · 변경 " + st.changed + " · 마스터 " + st.masters);
+    section("V7 아이콘 폭발 반경 (마스킹 차분) — 실측 기대: 오버라이드 " + st.total + " · 변경 " + st.changed);
 
     const offIcon = await runImport(designData, "honest", FULL_FONTS, true, 7, { iconSwap: false });
     const onIcon = await runImport(designData, "honest", FULL_FONTS, true, 7, {});
@@ -409,8 +433,23 @@ function section(t) { console.log("\n" + t); }
       const bs = onIcon.state.BIND_STAT["ov.icon"] || { ok: 0, revert: 0, error: 0, skip: 0 };
       check("ov.icon: 성공 " + bs.ok + "/" + st.total + " · 되돌림 " + bs.revert + " · 예외 " + bs.error,
         bs.ok === st.total && bs.revert === 0 && bs.error === 0);
-      check("아이콘 마스터 " + Object.keys(onIcon.state.ICON_COMP).length + "/" + st.masters + "개",
-        Object.keys(onIcon.state.ICON_COMP).length === st.masters);
+      const expKeys = expectedMasterKeys(designData, synthIcons(designData));
+      const gotKeys = new Set(Object.keys(onIcon.state.ICON_COMP));
+      const missing = [...expKeys].filter((k) => !gotKeys.has(k));
+      const extraK = [...gotKeys].filter((k) => !expKeys.has(k));
+      check("아이콘 마스터 전량 " + gotKeys.size + "/" + expKeys.size + "개 (전 조합)",
+        missing.length === 0 && extraK.length === 0,
+        (missing.length ? "누락: " + missing.slice(0, 5).join(" ") : "") + (extraK.length ? " 과잉: " + extraK.slice(0, 5).join(" ") : ""));
+      const allInst = [];
+      for (const pg of onIcon.tree) if (pg.name !== "DS - Icon Components")
+        for (const ch of pg["#"] || []) (function cnt(o) { if (o._icon && o.type === "INSTANCE") allInst.push(o._icon); for (const c of o["#"] || []) cnt(c); })(ch);
+      check("화면·컴포넌트의 아이콘이 전부 인스턴스 (" + allInst.length + "개, 낱개 벡터 0)",
+        (function () {
+          let frames = 0;
+          for (const pg of onIcon.tree) if (pg.name !== "DS - Icon Components")
+            for (const ch of pg["#"] || []) (function cnt(o) { if (o._icon && o.type === "FRAME") frames++; for (const c of o["#"] || []) cnt(c); })(ch);
+          return frames === 0;
+        })());
 
       const exp = expectedScreenIcons(designData);
       const obs = observedScreenIcons(onIcon.tree, screenNames);
@@ -444,8 +483,8 @@ function section(t) { console.log("\n" + t); }
       delete icons["lucide/search"];         // 슬롯 기본 (Empty State 48px) → 슬롯 통째 포기되어야 함
       const r = await runImport(designData, "honest", FULL_FONTS, true, 7, { icons: icons });
       const keys = Object.keys(r.state.ICON_COMP);
-      check("SVG 없는 아이콘의 마스터 미생성", keys.every((k) => k.indexOf("/circle-alert@") < 0 && k.indexOf("@48x48") < 0),
-        keys.filter((k) => k.indexOf("/circle-alert@") >= 0 || k.indexOf("@48x48") >= 0).join(","));
+      check("SVG 없는 아이콘의 마스터 미생성", keys.every((k) => k.indexOf("/circle-alert@") < 0 && k.indexOf("/search@") < 0),
+        keys.filter((k) => k.indexOf("/circle-alert@") >= 0 || k.indexOf("/search@") >= 0).join(","));
       const bs = r.state.BIND_STAT["ov.icon"] || { ok: 0, skip: 0, error: 0, revert: 0 };
       check("영향받은 오버라이드만 건너뜀 (성공 " + bs.ok + " + 건너뜀 " + bs.skip + " = " + st.total + ", 예외 0)",
         bs.ok + bs.skip === st.total && bs.error === 0 && bs.revert === 0 && bs.skip > 0);

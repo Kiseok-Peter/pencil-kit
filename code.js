@@ -20,7 +20,6 @@ let OPT = { bindTokens: true, iconSwap: true };  // 실행 옵션 (ui.html)
 let ICON_COMP = {};         // "lucide/fish@22x22" -> ComponentNode (아이콘 마스터, 크기별)
 let ICON_COMP_IDS = new Set();  // 아이콘 마스터의 Figma id (isIconNode 보조 판별)
 let ICON_SLOTS = {};        // 컴포넌트 안 icon 노드의 Pencil id -> {icon, library, width, height, fill, candidates:Set}
-let BUILDING_COMPONENT = false; // buildOneComponent 실행 중 — DS 카탈로그의 id 중복 사본을 인스턴스화하지 않기 위한 게이트
 
 // 재실행 시 전역이 남아 있으면 사고가 난다. 특히 COMP_MAP 이 남으면 buildOneComponent(가 조기 반환해)
 // 지난 실행의 컴포넌트를 재사용하고, 사용자가 그걸 지웠으면 createInstance 가 예외를 던진다.
@@ -31,7 +30,7 @@ function resetState() {
   DBG = []; ROOT_FILL_OVR = 0;
   LOADED = new Set(); FONT_RESOLVED = {};
   BIND_STAT = {}; CAP = {};
-  ICON_COMP = {}; ICON_COMP_IDS = new Set(); ICON_SLOTS = {}; BUILDING_COMPONENT = false;
+  ICON_COMP = {}; ICON_COMP_IDS = new Set(); ICON_SLOTS = {};
 }
 
 function dumpTree(node, depth, out) {
@@ -390,16 +389,14 @@ function makeIconFrame(spec) {
 
 function buildIcon(spec) {
   let node = null;
-  // 인스턴스 경로: (1) 컴포넌트 마스터 빌드 중 (DS 카탈로그의 id 중복 사본 제외)
-  //              (2) 스왑 지원 확인됨 (3) 교체가 실제로 일어나는 슬롯 (4) spec 이 슬롯 정의와 일치 (5) 마스터 존재
-  // 하나라도 어긋나면 오늘과 완전히 같은 프레임 경로.
-  const slot = BUILDING_COMPONENT && CAP["ov.icon"] !== false ? ICON_SLOTS[spec.id] : null;
-  if (slot && slot.candidates.size > 0
-      && slot.icon === spec.icon && slot.library === (spec.library || "lucide")
-      && slot.width === spec.width && slot.height === spec.height) {
-    const comp = ICON_COMP[iconKey(slot.library, slot.icon, slot.width, slot.height)];
+  // 인스턴스 경로: 같은 (라이브러리, 아이콘, 크기) 마스터가 있으면 어디서든 인스턴스로 만든다.
+  // 키가 Pencil id 와 무관해서 DS 카탈로그의 id 중복 사본도 안전하다.
+  // 마스터가 없거나 스왑 미지원 환경이면 기존과 완전히 같은 프레임 경로.
+  if (CAP["ov.icon"] !== false && spec.icon
+      && typeof spec.width === "number" && typeof spec.height === "number") {
+    const comp = ICON_COMP[iconKey(spec.library || "lucide", spec.icon, spec.width, spec.height)];
     if (comp) { try { node = comp.createInstance(); } catch (e) { node = null; } }
-    // 마스터가 이미 슬롯 크기로 만들어져 있으므로 rescale 하지 않는다 (인스턴스 자식 기하 변경은 금지 가능성)
+    // 마스터가 이미 해당 크기로 만들어져 있으므로 rescale 하지 않는다 (인스턴스 자식 기하 변경은 금지 가능성)
   }
   if (!node) {
     node = makeIconFrame(spec);
@@ -448,24 +445,36 @@ function collectIconSlots(allComponents, allScreens) {
   for (const c of allComponents) walkRefs(c);
 }
 
-// 교체 슬롯에 필요한 아이콘 마스터를 생성한다 (프로브 통과 시에만 호출).
+// 디자인 전체에서 쓰이는 (라이브러리, 아이콘, 크기) 조합 전부의 마스터를 생성한다 (프로브 통과 시에만 호출).
+// 모든 아이콘이 인스턴스가 되어 라이브러리 페이지가 완성되고, SVG 파싱도 배치 수 → 조합 수로 줄어든다.
 // 크기별로 따로 만든다 — 같은 크기끼리만 스왑하면 인스턴스 리사이즈가 아예 필요 없어진다.
-async function buildIconComponents(offsets) {
+async function buildIconComponents(allComponents, allScreens, offsets) {
   const need = {};   // key -> {library, icon, width, height}
+  const add = (lib, name, w, h) => {
+    if (!ICONS[lib + "/" + name] && !ICONS[name]) return;   // SVG 없으면 마스터 안 만듦 (빈 마스터 = 아이콘 소멸)
+    need[iconKey(lib, name, w, h)] = { library: lib, icon: name, width: w, height: h };
+  };
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (n.type === "icon" && n.icon && typeof n.width === "number" && typeof n.height === "number")
+      add(n.library || "lucide", n.icon, n.width, n.height);
+    for (const c of n.children || []) walk(c);
+    const d = n.descendants;   // 교체 subtree 안의 아이콘도
+    if (d) for (const k in d) if (d[k] && typeof d[k] === "object") walk(d[k]);
+  };
+  for (const c of allComponents) walk(c);
+  for (const s of allScreens) walk(s);
+  // 교체 후보 (슬롯 크기로) — 화면에 노드로 등장하지 않고 오버라이드 값으로만 존재하는 아이콘
   for (const pid in ICON_SLOTS) {
     const s = ICON_SLOTS[pid];
     if (!s.candidates.size) continue;
-    // 기본 아이콘의 SVG 가 없으면 슬롯 통째 포기 — 빈 마스터로 인스턴스화하면 아이콘이 사라진다(현행보다 나쁨)
+    // 기본 아이콘의 SVG 가 없으면 슬롯 통째 포기 — 슬롯이 인스턴스가 안 되므로 스왑도 불가
     if (!ICONS[s.library + "/" + s.icon] && !ICONS[s.icon]) {
       DBG.push("아이콘 슬롯 포기: " + s.icon + " SVG 없음 → 이 슬롯의 교체 미적용(현행 유지)");
       s.candidates = new Set();
       continue;
     }
-    need[iconKey(s.library, s.icon, s.width, s.height)] = { library: s.library, icon: s.icon, width: s.width, height: s.height };
-    for (const cand of s.candidates) {
-      if (!ICONS[s.library + "/" + cand] && !ICONS[cand]) continue;   // 후보만 없으면 그 오버라이드 1건만 skip (swapIcon 에서 집계)
-      need[iconKey(s.library, cand, s.width, s.height)] = { library: s.library, icon: cand, width: s.width, height: s.height };
-    }
+    for (const cand of s.candidates) add(s.library, cand, s.width, s.height);
   }
   const keys = Object.keys(need).sort();
   if (!keys.length) return;
@@ -1338,11 +1347,7 @@ async function buildOneComponent(cspec, targetPage) {
   // 컴포넌트화 후 다른 페이지로 옮기면 auto-layout 텍스트 측정이 깨질 수 있으므로
   // 처음부터 대상 페이지로 전환해 거기서 빌드한다.
   if (targetPage) await switchToPage(targetPage);
-  // 아이콘 인스턴스화는 컴포넌트 마스터 안에서만 — DS 카탈로그가 같은 Pencil id 의 사본을 담고 있어
-  // 이 게이트가 없으면 화면의 사본까지 인스턴스가 된다
-  BUILDING_COMPONENT = true;
-  let frame;
-  try { frame = buildFrame(cspec); } finally { BUILDING_COMPONENT = false; }
+  const frame = buildFrame(cspec);
   applyCommon(frame, cspec);
   frame.x = cspec.x || 0; frame.y = cspec.y || 0;
   applySizing(frame, cspec, null);
@@ -1418,11 +1423,11 @@ async function importDesign(data, icons, selected, pageMap, compPageMap, theme, 
   const offsets = {};       // pageId -> 다음 x (컴포넌트·화면 공유: 같은 페이지면 가로로 나란히)
   const usedPages = {};     // 페이지 집계용
 
-  // 0.5) 아이콘 슬롯 수집(항상 — isIconNode 판별에도 쓰임) + 교체 슬롯의 아이콘 마스터 생성(스왑 지원 시에만)
-  collectIconSlots(allComponents, allScreens);
+  // 0.5) 아이콘 슬롯 수집(항상 — isIconNode 판별에도 쓰임) + 아이콘 마스터 전량 생성(스왑 지원 시에만)
+  collectIconSlots(allComponents, screens);   // 선택된 화면 기준 (buildNeededComponents 와 같은 원칙)
   if (CAP["ov.icon"] !== false) {
     figma.ui.postMessage({ type: "progress", text: "아이콘 컴포넌트 생성 중..." });
-    await buildIconComponents(offsets);
+    await buildIconComponents(allComponents, screens, offsets);
   }
   await switchToPage(firstScreenPage);
 
