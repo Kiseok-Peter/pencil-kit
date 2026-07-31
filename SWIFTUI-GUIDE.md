@@ -103,6 +103,16 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 > (`name.partition("-")`). `font-size-body` 는 버킷이 `font` 로 잡혀 **에러** — `fontsize-body` 처럼 붙여 쓴다.
 > `fontweight-*` 를 number 로 만들면 Pencil 이 타입 에러로 거부한다(string 필수).
 
+### 3-0) 이미지: 에셋 vs 콘텐츠 (노드 이름으로 구분)
+
+| 노드 이름 접두 | 뜻 | SwiftUI |
+|---|---|---|
+| `asset/…` | 앱에 번들되는 **에셋** (온보딩 일러스트 등) | Asset Catalog → `Image("onboarding-1")` |
+| `content/…` | 서버·사용자가 채우는 **콘텐츠** (식당 사진·리뷰 사진·썸네일) | `AsyncImage` + placeholder. **에셋으로 만들지 말 것** |
+
+> 초코로드 실측: image fill 45곳 중 에셋은 **3곳**(온보딩 1·2·3)뿐이고 나머지는 전부 목업용 더미 콘텐츠다.
+> Unsplash 원격 URL 도 콘텐츠이므로 다운로드 대상이 아니다.
+
 ### 3-2) 치수 토큰 접두 규약 (치수 토큰화 Phase 에서 도입)
 
 | 접두 | 타입 | 명명 | 예 | SwiftUI |

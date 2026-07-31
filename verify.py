@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # 추출 데이터 무결성 검증 (Figma 임포트/SwiftUI 생성 전 프리플라이트)
-# 사용법: python3 verify.py --data <데이터폴더> [--strict-typo] [--strict-tokens] [--strict-dims]
+# 사용법: python3 verify.py --data <데이터폴더> [--strict-typo] [--strict-tokens] [--strict-dims] [--strict-colors]
 #   (--data 생략 시 CWD / env PENCIL_DATA)
 # 검사: ref 해소 / 절단(...) / 아이콘 라이브러리 / 변수 참조 정의 여부 / 타이포 변수 타입
 # 경고: 타이포 리터럴 커버리지(+분포) / 토큰 이름 버킷 — --strict-* 로 하드 실패 승격
@@ -24,6 +24,7 @@ def _pop_data(argv):
 STRICT_TYPO, ARGV = _pop_flag(sys.argv[1:], "--strict-typo")
 STRICT_TOKENS, ARGV = _pop_flag(ARGV, "--strict-tokens")
 STRICT_DIMS, ARGV = _pop_flag(ARGV, "--strict-dims")
+STRICT_COLORS, ARGV = _pop_flag(ARGV, "--strict-colors")
 DATA, _ = _pop_data(ARGV)
 DATA = os.path.abspath(DATA)
 SUPPORTED_ICON_LIBS = {"lucide", "feather", "phosphor",
@@ -42,6 +43,9 @@ TOKEN_BUCKETS = {"radius", "spacing", "fontsize", "fontweight", "lineheight", "t
 # 치수(레이아웃) 토큰화 커버리지 — 타이포와 같은 범위(카탈로그 제외)에서 리터럴을 센다.
 # 화이트리스트: 0(토큰 불필요 — "없음"의 표현), padding 21(단발 광학치, 디자인 검토 후보로 문서화됨)
 DIM_WHITELIST_PAD = {0, 21}
+
+# 색 토큰화 커버리지에서 예외로 두는 리터럴 — 완전 투명은 "색"이 아니라 "없음"의 표현이라 토큰이 없다.
+COLOR_WHITELIST = {"#00000000"}
 
 # 변수 참조 판별: $ 뒤 소문자 시작 kebab (텍스트 내용의 "$5" 같은 값 오인 방지)
 _VAR_RE = re.compile(r"^\$[a-z][a-z0-9-]*$")
@@ -178,6 +182,29 @@ def main():
                 hit("strokeWidth", x, (0,))
         else:
             hit("strokeWidth", sw, (0,))
+    color_lit = {}
+    def tally_colors(n):
+        """fill/stroke/effect.color 의 생 hex 를 센다 (문자열·배열·{color}·그라데이션 stop 전부)"""
+        def hit(v):
+            if isinstance(v, str) and v.startswith("#"):
+                u = v.upper()
+                if u not in COLOR_WHITELIST:
+                    color_lit[u] = color_lit.get(u, 0) + 1
+            elif isinstance(v, list):
+                for x in v:
+                    hit(x)
+            elif isinstance(v, dict):
+                hit(v.get("color"))
+                for st in v.get("colors") or []:
+                    if isinstance(st, dict):
+                        hit(st.get("color"))
+        hit(n.get("fill"))
+        hit(n.get("stroke"))
+        eff = n.get("effect")
+        for e in (eff if isinstance(eff, list) else [eff] if eff else []):
+            if isinstance(e, dict):
+                hit(e.get("color"))
+
     def typo_check(n):
         if n.get("type") == "text":
             text_total[0] += 1
@@ -185,6 +212,7 @@ def main():
         elif "type" not in n and any(k in n for k in TYPO_STR_KEYS + TYPO_NUM_KEYS):
             tally_typo(n, is_override=True)   # descendants 오버라이드 객체 (type 없음 = 속성 오버라이드)
         tally_dims(n)                          # 치수는 노드 종류 무관 (frame·rect·오버라이드 전부)
+        tally_colors(n)
     scope_n = 0
     for n in nodes:
         if isinstance(n, dict) and typo_scope(n):
@@ -262,6 +290,14 @@ def main():
         for k, d in dim_dist.items():
             if d:
                 print(f"     {k} 분포: " + " ".join(f"{v}:{c}" for v, c in sorted(d.items(), key=lambda x: -x[1])[:12]))
+    # 색 토큰화 커버리지 (--strict-colors = 색 Phase 완료 게이트)
+    n_color = sum(color_lit.values())
+    warn(n_color == 0, f"색 토큰화 미완: fill/stroke/effect 생 hex {n_color}곳 ({len(color_lit)}종)",
+         strict=STRICT_COLORS)
+    if n_color:
+        print("     분포: " + " ".join(f"{k}:{v}" for k, v in sorted(color_lit.items(), key=lambda x: -x[1])[:12]))
+    else:
+        print(f"     (색 리터럴 0 — 화이트리스트 {sorted(COLOR_WHITELIST)} 제외)")
 
     tail = f" (경고 {warns}건)" if warns else ""
     print("결과: " + (("✅ 이상 없음 — 변환 진행 가능" + tail) if issues == 0 else f"❌ 문제 {issues}종 — 위 항목 확인{tail}"))
