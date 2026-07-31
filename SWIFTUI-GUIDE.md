@@ -140,13 +140,23 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 
 **아이콘 PDF 추출은 `.pen`/Pencil MCP 가 있는 컴퓨터에서** 수행 (iOS 프로젝트 셋업 때 함께). 절차:
 1. `python3 make-icon-ids.py --data <프로젝트>/export` → `<export>/_icon_ids.json` 생성 (`{아이콘이름: 대표노드ID}`, pen-nodes.json 기준)
+   - **⚠️ 대표 노드를 아무거나 고르면 안 된다.** `export_nodes` 는 "그 노드가 화면에서 보이는 모습 그대로" 뽑으므로,
+     사용처를 잡으면 크기(12~36px)와 색(흰색·브랜드색)이 제각각인 PDF 가 나온다. 스크립트가
+     **라이트판 → `DS - *` 카탈로그 → 정사각 → 표준크기 → 표준색** 순으로 점수를 매겨 "규격 견본"을 고른다.
+   - 실행 결과에 `✅ 전량 균일` 이 떠야 정상. `⚠️ 다크판에서 선택` 이 뜨면 그 아이콘은 **거의 흰색**으로 나온다
+     (다크판 `$text-primary` = `#F5F4F1`). `⚠️ 크기 불일치` 가 뜨면 **획 두께가 달라진다** — 아래 3번으로도 못 고친다.
+   - 경고가 뜨면 카탈로그(`DS - Icons`)에 **전 아이콘을 같은 크기·같은 색으로** 실어두면 사라진다.
 2. Claude 가 각 노드ID 를 `export_nodes(filePath, outputDir, nodeIds:[ID], format:"pdf")` 로 추출
    (PDF 는 노드ID로 저장됨 → `_icon_ids.json` 로 `아이콘이름.pdf` 로 rename)
    - **아이콘당 1회 호출** (여러 노드ID 를 한 번에 주면 멀티페이지 1파일로 합쳐짐)
    - outputDir 은 iOS 프로젝트의 Asset Catalog 위치로 바로 지정하면 좋음
-3. **⚠️ 패딩 정규화 (필수)**: `python3 pad-icons.py <아이콘PDF폴더>`
+3. **⚠️ 패딩 정규화 (필수, 추출 직후 1회)**: `python3 pad-icons.py <아이콘PDF폴더> --canvas 24`
    - **이유**: `export_nodes` 는 아이콘을 **보이는 패스에 tight crop** 한다 (노드 박스도, lucide 내장 패딩도 무시). 예: chevron 24×24 노드 → PDF 7×13. 종횡비가 제각각이라 그대로 `.frame()` 에 넣으면 아이콘마다 크기·왜곡이 들쭉날쭉.
-   - 이 스크립트가 각 PDF 의 MediaBox 만 **중앙 정사각 + 여백**으로 넓혀 균일 캔버스로 만든다 (콘텐츠는 그대로 → 자동 중앙정렬, PDF 라이브러리 불필요). 여백 조절: `MARGIN=0.10`
+   - 이 스크립트가 각 PDF 의 MediaBox 만 **중앙 정사각**으로 넓혀 균일 캔버스로 만든다 (콘텐츠는 그대로 → 자동 중앙정렬, PDF 라이브러리 불필요).
+   - **`--canvas <원본 노드 크기>` 를 반드시 준다** (1번에서 전량 24×24 로 확인됐으면 `--canvas 24`).
+     생략하면 캔버스 = 폴더 내 최대 변 + 여백이라 원본 박스보다 커지고, `--per-file` 은 **파일별** 상대 캔버스라
+     모든 아이콘이 `.frame()` 을 똑같이 꽉 채워 **chevron 이 x 만큼 커진다**(디자인의 크기 관계 소실).
+   - MediaBox 를 덮어쓰므로 **추출 직후 1회만** 실행한다. 두 번 돌리면 경고 수치가 콘텐츠가 아닌 이전 캔버스를 가리킨다(중심은 보존됨).
 4. Xcode: Asset Catalog 에 PDF 추가 → 'Preserve Vector Data' + 'Render As: Template Image'
 5. 사용: `Image("heart").renderingMode(.template).resizable().scaledToFit().frame(width:24,height:24).foregroundColor(Color("text-primary"))`
 
