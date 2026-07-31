@@ -808,6 +808,7 @@ async function createVariables(varData, selectedTheme, collectionName) {
     const cols = await figma.variables.getLocalVariableCollectionsAsync();
     collection = cols.find((c) => c.name === collName) || null;
   } catch (e) {}
+  const reusedCollection = !!collection;   // 기존 컬렉션을 덮어쓰는지 = 모드 실패 시 경고 문구가 달라진다
   if (!collection) {
     try { collection = figma.variables.createVariableCollection(collName); }
     catch (e) { return; }
@@ -831,7 +832,14 @@ async function createVariables(varData, selectedTheme, collectionName) {
       modeIds[modeNames[0]] = collection.defaultModeId;
       for (let i = 1; i < modeNames.length; i++) {
         try { modeIds[modeNames[i]] = collection.addMode(modeNames[i]); }
-        catch (e) { DBG.push("모드 추가 실패(" + modeNames[i] + ") — 플랜 제한(모드 1개)일 수 있음"); }
+        catch (e) {
+          // 조용히 넘기면 안 된다: 기존 컬렉션이면 남아 있던 다른 테마 값이 이번 테마로 **덮어써진** 상태다.
+          DBG.push("모드 추가 실패(" + modeNames[i] + ") — Figma 플랜이 컬렉션당 모드 1개로 제한."
+            + (reusedCollection
+              ? " ⚠ 기존 컬렉션 '" + collName + "' 의 모드가 '" + modeNames[0] + "' 로 바뀌고 값이 전부 덮어써졌습니다"
+                + " (이전 테마 값은 사라짐). 두 테마를 다 남기려면 컬렉션 이름을 테마별로 다르게 주세요."
+              : " '" + modeNames[0] + "' 값만 저장됩니다. 다른 테마가 필요하면 컬렉션 이름을 다르게 해서 한 번 더 임포트하세요."));
+        }
       }
     } else {
       // 기존 다중 모드: 이름으로 매핑(재사용), 없는 것만 추가
