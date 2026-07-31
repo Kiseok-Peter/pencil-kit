@@ -37,13 +37,14 @@ function loadCode(figma) {
   ctx.globalThis = ctx;
   vm.createContext(ctx);
   vm.runInContext(SRC + "\n;__out.api = { importDesign, createVariables, bindSummary,"
-    + " state: () => ({ VARS, VAR_OBJ, VAR_HEX, VAR_NUM, VAR_STR, DBG, BIND_STAT, CAP, OPT, COMP_MAP, LOADED }) };",
+    + " state: () => ({ VARS, VAR_OBJ, VAR_HEX, VAR_NUM, VAR_STR, DBG, BIND_STAT, CAP, OPT, COMP_MAP, LOADED, ICON_COMP, ICON_SLOTS }) };",
     ctx, { filename: "code.js" });
   return ctx.__out.api;
 }
 
 // ---- 트리 직렬화 (boundVariables·id·parent 제외 = "눈에 보이는 것"만) ----
-const SKIP_KEYS = { parent: 1, boundVariables: 1, id: 1, children: 1 };
+// _main 은 마스터 컴포넌트 객체 참조라 직렬화하면 재귀 폭발 — 아이콘 정체는 _icon 으로 이미 실려 있다
+const SKIP_KEYS = { parent: 1, boundVariables: 1, id: 1, children: 1, _main: 1, _plugin: 1 };
 function norm(v) {
   if (typeof v === "number") return Number.isFinite(v) ? Math.round(v * 1e6) / 1e6 : String(v);
   if (v === null || typeof v !== "object") return v;
@@ -102,12 +103,126 @@ function tokenValue(variables, name) {
   return v;
 }
 
+// ---- 합성 SVG (아이콘 경로 실행에 필수 — 없으면 343개 전부 "SVG 없음" 폴백을 타 아무것도 검증 못 한다) ----
+// data-icon 속성으로 아이콘명을 심어 두면 스텁이 _icon 으로 파싱해 트리 비교로 정체를 단언할 수 있다.
+function synthIcons(designData) {
+  const map = {};
+  for (const it of designData.icons || []) {
+    const lib = it.library || "lucide";
+    map[lib + "/" + it.icon] = '<svg data-icon="' + it.icon + '" viewBox="0 0 24 24"><path d="M0 0"/></svg>';
+  }
+  return map;
+}
+
 // ---- 한 번 임포트하고 페이지 트리를 돌려준다 ----
-async function runImport(designData, behavior, fonts, bindTokens, seed) {
-  const stub = createFigmaStub({ behavior: behavior, fonts: fonts, seed: seed });
+// extra: {icons(합성 SVG 맵 오버라이드), swap(스텁 스왑 모델), pluginData, iconSwap(false=아이콘 인스턴스화 끔)}
+async function runImport(designData, behavior, fonts, bindTokens, seed, extra) {
+  extra = extra || {};
+  const stub = createFigmaStub({ behavior: behavior, fonts: fonts, seed: seed, swap: extra.swap, pluginData: extra.pluginData });
   const api = loadCode(stub.figma);
-  await api.importDesign(designData, {}, undefined, {}, {}, "light", "Pencil Tokens", { bindTokens: bindTokens });
+  const icons = extra.icons !== undefined ? extra.icons : synthIcons(designData);
+  const opts = { bindTokens: bindTokens };
+  if (extra.iconSwap !== undefined) opts.iconSwap = extra.iconSwap;
+  await api.importDesign(designData, icons, undefined, {}, {}, "light", "Pencil Tokens", opts);
   return { stub: stub, api: api, state: api.state(), tree: stub.figma.root.children.map(serialize) };
+}
+
+// ---- 아이콘 검증 유틸 ----
+// 기대값은 전부 design-data.json 에서 계산한다 (하드코딩 금지 규약)
+function iconOverrideStats(designData) {
+  const comps = {};
+  for (const c of designData.components || []) comps[c.id] = c;
+  const slots = {};   // pid -> {icon, w, h, lib}
+  const walkIcons = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (n.type === "icon" && n.icon && typeof n.width === "number") slots[n.id] = { icon: n.icon, w: n.width, h: n.height, lib: n.library || "lucide" };
+    for (const c of n.children || []) walkIcons(c);
+  };
+  for (const c of designData.components || []) walkIcons(c);
+  let total = 0, changed = 0;
+  const perSlot = {};
+  const walkRefs = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (n.type === "ref") {
+      const ds = n.descendants || {};
+      for (const pid in ds) {
+        const ov = ds[pid];
+        if (ov && typeof ov === "object" && !ov.type && ov.icon && slots[pid]) {
+          total++;
+          if (ov.icon !== slots[pid].icon) changed++;
+          (perSlot[pid] = perSlot[pid] || new Set()).add(ov.icon);
+        }
+      }
+    }
+    for (const c of n.children || []) walkRefs(c);
+    const d = n.descendants;
+    if (d) for (const k in d) if (d[k] && typeof d[k] === "object") walkRefs(d[k]);
+  };
+  for (const s of designData.screens || []) walkRefs(s);
+  for (const c of designData.components || []) walkRefs(c);
+  const need = new Set();
+  for (const pid in perSlot) {
+    const s = slots[pid];
+    need.add(s.lib + "/" + s.icon + "@" + s.w + "x" + s.h);
+    for (const i of perSlot[pid]) need.add(s.lib + "/" + i + "@" + s.w + "x" + s.h);
+  }
+  return { total: total, changed: changed, masters: need.size, slots: slots, perSlot: perSlot };
+}
+
+// 화면별 기대 아이콘 멀티셋 — ref 를 재귀 전개하고 오버라이드·교체를 반영
+function expectedScreenIcons(designData) {
+  const comps = {};
+  for (const c of designData.components || []) comps[c.id] = c;
+  const expand = (spec, push) => {
+    if (!spec || typeof spec !== "object") return;
+    if (spec.type === "icon") { if (spec.icon) push(spec.icon); return; }
+    if (spec.type === "ref" && spec.ref && comps[spec.ref]) {
+      const ds = spec.descendants || {};
+      const walkComp = (n) => {
+        if (!n || typeof n !== "object") return;
+        const ov = ds[n.id];
+        if (ov && typeof ov === "object" && ov.type) { expand(ov, push); return; }   // 교체 subtree
+        if (n.type === "icon") { const nm = ov && typeof ov === "object" && ov.icon ? ov.icon : n.icon; if (nm) push(nm); return; }
+        if (n.type === "ref") { expand(n, push); return; }   // 중첩 ref (자기 descendants 로)
+        for (const c of n.children || []) walkComp(c);
+      };
+      for (const c of comps[spec.ref].children || []) walkComp(c);
+      return;
+    }
+    for (const c of spec.children || []) expand(c, push);
+  };
+  const out = {};
+  for (const s of designData.screens || []) { const arr = []; expand(s, (i) => arr.push(i)); out[s.name] = arr.sort(); }
+  return out;
+}
+
+// 빌드된 트리(직렬화)에서 화면별 실제 아이콘 수확 (_icon 마커)
+function observedScreenIcons(tree, screenNames) {
+  const out = {};
+  const collect = (o, arr) => { if (o._icon) arr.push(o._icon); for (const c of o["#"] || []) collect(c, arr); };
+  for (const page of tree) for (const child of page["#"] || []) {
+    if (child.type === "FRAME" && screenNames.has(child.name)) { const arr = []; collect(child, arr); out[child.name] = arr.sort(); }
+  }
+  return out;
+}
+
+// V7 마스킹: 아이콘 정체·구조를 지우고(이름·크기만 남김) 마스터 페이지를 제거 → "아이콘 밖" 동일성만 비교
+function maskIconTree(tree) {
+  const mask = (o) => {
+    if (o._icon !== undefined) return { "@iconslot": (o.name || "") + "|" + o.width + "x" + o.height };
+    const r = {};
+    for (const k in o) if (k !== "#") r[k] = o[k];
+    r["#"] = (o["#"] || []).map(mask);
+    return r;
+  };
+  return tree.filter((p) => p.name !== "DS - Icon Components").map(mask);
+}
+
+// 원시 스텁 트리 탐색 (직렬화는 paint 내부 boundVariables 를 지우므로 색 토큰 검사는 원시로)
+function rawFind(node, pred, out) {
+  if (pred(node)) out.push(node);
+  for (const c of node.children || []) rawFind(c, pred, out);
+  return out;
 }
 
 // ---- 검사 러너 ----
@@ -261,15 +376,105 @@ function section(t) { console.log("\n" + t); }
     section("V5 재실행 멱등성 (resetState)");
     const stub = createFigmaStub({ behavior: "honest", fonts: FULL_FONTS });
     const api = loadCode(stub.figma);
-    await api.importDesign(designData, {}, undefined, {}, {}, "light", "Pencil Tokens", { bindTokens: true });
+    const svgMap = synthIcons(designData);
+    await api.importDesign(designData, svgMap, undefined, {}, {}, "light", "Pencil Tokens", { bindTokens: true });
     const c1 = Object.keys(api.state().COMP_MAP).length, d1 = api.state().DBG.length;
     const v1 = Object.keys(stub.varStore).length;
-    await api.importDesign(designData, {}, undefined, {}, {}, "light", "Pencil Tokens", { bindTokens: true });
+    const i1 = Object.keys(api.state().ICON_COMP).length;
+    await api.importDesign(designData, svgMap, undefined, {}, {}, "light", "Pencil Tokens", { bindTokens: true });
     const c2 = Object.keys(api.state().COMP_MAP).length, d2 = api.state().DBG.length;
     const v2 = Object.keys(stub.varStore).length;
     check("2회차도 컴포넌트를 새로 만든다 (" + c1 + " → " + c2 + ")", c1 > 0 && c1 === c2);
     check("DBG 가 누적되지 않는다 (" + d1 + " → " + d2 + ")", d1 === d2);
     check("변수는 컬렉션·이름으로 재사용 — 중복 생성 없음 (" + v1 + " → " + v2 + ")", v1 > 0 && v1 === v2);
+    const i2 = Object.keys(api.state().ICON_COMP).length;
+    check("2회차도 아이콘 마스터를 새로 만든다 (" + i1 + " → " + i2 + ", resetState 검증)", i1 > 0 && i1 === i2);
+  }
+
+  // ---------- V7~V11 아이콘 스왑 ----------
+  if (designData) {
+    const st = iconOverrideStats(designData);
+    const screenNames = new Set((designData.screens || []).map((s) => s.name));
+    section("V7 아이콘 폭발 반경 (마스킹 차분) — 실측 기대: 오버라이드 " + st.total + " · 변경 " + st.changed + " · 마스터 " + st.masters);
+
+    const offIcon = await runImport(designData, "honest", FULL_FONTS, true, 7, { iconSwap: false });
+    const onIcon = await runImport(designData, "honest", FULL_FONTS, true, 7, {});
+    {
+      const d = diff(maskIconTree(offIcon.tree), maskIconTree(onIcon.tree), "", []);
+      check("아이콘 밖 트리 완전 동일 (스왑 ON/OFF)", d.length === 0, d.join("\n"));
+    }
+
+    section("V8 아이콘 정확성");
+    {
+      const bs = onIcon.state.BIND_STAT["ov.icon"] || { ok: 0, revert: 0, error: 0, skip: 0 };
+      check("ov.icon: 성공 " + bs.ok + "/" + st.total + " · 되돌림 " + bs.revert + " · 예외 " + bs.error,
+        bs.ok === st.total && bs.revert === 0 && bs.error === 0);
+      check("아이콘 마스터 " + Object.keys(onIcon.state.ICON_COMP).length + "/" + st.masters + "개",
+        Object.keys(onIcon.state.ICON_COMP).length === st.masters);
+
+      const exp = expectedScreenIcons(designData);
+      const obs = observedScreenIcons(onIcon.tree, screenNames);
+      const bad = [];
+      for (const name in exp) {
+        const e = JSON.stringify(exp[name]), o = JSON.stringify(obs[name] || []);
+        if (e !== o) bad.push(name + ": 기대 " + e.slice(0, 60) + " ≠ 실제 " + o.slice(0, 60));
+      }
+      check("전 화면(" + Object.keys(exp).length + "개) 아이콘 멀티셋 = 기대값 (오버라이드·교체 반영)", bad.length === 0, bad.slice(0, 5).join("\n"));
+
+      const spot = (scr, icon) => (obs[scr] || []).indexOf(icon) >= 0;
+      check("스포트: 에러 토스트 → circle-alert", spot("Status Change Error Toast", "circle-alert"));
+      check("스포트: 삭제 확인 팝업 → trash-2", spot("삭제 확인 팝업", "trash-2"));
+      const chips = new Set(obs["Category Bottom Sheet Frame"] || []);
+      check("스포트: 카테고리 시트에 서로 다른 아이콘 " + chips.size + "종 (≥10)", chips.size >= 10);
+    }
+
+    section("V9 아이콘 폴백 안전성 (스왑 불가 환경 = 오늘과 완전 동일)");
+    for (const sw of ["throw", "noop"]) {
+      const alt = await runImport(designData, "honest", FULL_FONTS, true, 7, { swap: sw });
+      const d = diff(offIcon.tree, alt.tree, "", []);
+      check(sw + ": 트리가 스왑 OFF 와 완전 동일 (마스킹 없이)", d.length === 0, d.join("\n"));
+      check(sw + ": 프로브가 차단 (CAP=false, 마스터 0개)",
+        alt.state.CAP["ov.icon"] === false && Object.keys(alt.state.ICON_COMP).length === 0);
+    }
+
+    section("V10 SVG 미수신 가드");
+    {
+      const icons = synthIcons(designData);
+      delete icons["lucide/circle-alert"];   // 후보 전용 (Toast 슬롯)
+      delete icons["lucide/search"];         // 슬롯 기본 (Empty State 48px) → 슬롯 통째 포기되어야 함
+      const r = await runImport(designData, "honest", FULL_FONTS, true, 7, { icons: icons });
+      const keys = Object.keys(r.state.ICON_COMP);
+      check("SVG 없는 아이콘의 마스터 미생성", keys.every((k) => k.indexOf("/circle-alert@") < 0 && k.indexOf("@48x48") < 0),
+        keys.filter((k) => k.indexOf("/circle-alert@") >= 0 || k.indexOf("@48x48") >= 0).join(","));
+      const bs = r.state.BIND_STAT["ov.icon"] || { ok: 0, skip: 0, error: 0, revert: 0 };
+      check("영향받은 오버라이드만 건너뜀 (성공 " + bs.ok + " + 건너뜀 " + bs.skip + " = " + st.total + ", 예외 0)",
+        bs.ok + bs.skip === st.total && bs.error === 0 && bs.revert === 0 && bs.skip > 0);
+      const obs = observedScreenIcons(r.tree, screenNames);
+      check("토스트는 기본 아이콘 유지 (빈 프레임으로 스왑하지 않음)", (obs["Status Change Error Toast"] || []).indexOf("circle-check") >= 0);
+    }
+
+    section("V11 재색칠 (스왑이 색을 날려도 복원 + 토큰 바인딩 유지)");
+    {
+      const r = await runImport(designData, "honest", FULL_FONTS, true, 7, { swap: "lossy" });
+      // Toast 슬롯 fill = $primary → 스왑 후 재색칠이 색 변수 바인딩까지 복원해야 한다
+      const toasts = [];
+      for (const pg of r.stub.figma.root.children) rawFind(pg, (n) => n.type === "FRAME" && n.name === "Status Change Error Toast", toasts);
+      const inst = toasts.length ? rawFind(toasts[0], (n) => n.type === "INSTANCE" && n._icon === "circle-alert", []) : [];
+      const vecs = inst.length ? rawFind(inst[0], (n) => n.type === "VECTOR", []) : [];
+      const paint = vecs.length && vecs[0].strokes && vecs[0].strokes[0];
+      check("lossy: 스왑된 토스트 아이콘이 재색칠됨 (검정 아님)", !!paint && !(paint.color.r === 0 && paint.color.g === 0 && paint.color.b === 0),
+        JSON.stringify(paint && paint.color));
+      check("lossy: 재색칠에 색 변수 바인딩 존재 ($primary)", !!(paint && paint.boundVariables));
+
+      const r2 = await runImport(designData, "honest", FULL_FONTS, true, 7, { pluginData: "notInherited" });
+      const blocks = [];
+      for (const pg of r2.stub.figma.root.children) {
+        if (pg.name === "DS - Icon Components") continue;
+        rawFind(pg, (n) => n._icon && Array.isArray(n.fills) && n.fills.length > 0, blocks);
+      }
+      check("pluginData 미상속이어도 아이콘에 단색 fills 없음 (색 블록 증상 0, ICON_SLOTS 판별)", blocks.length === 0,
+        blocks.slice(0, 3).map((n) => n.name).join(","));
+    }
   }
 
   // ---------- V6 잔여 결함 회귀 (합성 스펙) ----------

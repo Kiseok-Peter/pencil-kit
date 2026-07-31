@@ -53,6 +53,11 @@ def collect(nodes):
             return
         if n.get("type") == "icon" and n.get("icon"):
             icons[(n.get("library") or "lucide", n["icon"])] = True
+        elif "type" not in n and n.get("icon"):
+            # descendants 오버라이드 dict — type 이 없고 {icon:"fish"} 형태.
+            # 이걸 안 세면 오버라이드에만 등장하는 아이콘의 SVG 가 다운로드되지 않아 교체 자체가 불가능해진다.
+            # (오버라이드에는 library 키가 없으므로 lucide 기본)
+            icons[(n.get("library") or "lucide", n["icon"])] = True
         add_fill(n.get("fill"))
     for root in nodes:
         walk(root, visit)

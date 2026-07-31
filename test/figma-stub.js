@@ -63,6 +63,8 @@ const DEFAULTS = {
 function createFigmaStub(opts) {
   opts = opts || {};
   const behavior = opts.behavior || "honest";
+  const swapMode = opts.swap || "ok";              // 인스턴스 스왑 모델: ok | throw | noop | lossy
+  const inheritPluginData = opts.pluginData !== "notInherited";
   const fonts = opts.fonts || FULL_FONTS;
   const rng = makeRng(opts.seed == null ? 12345 : opts.seed);
   const installed = new Set(fonts.map((f) => f.family + "||" + f.style));
@@ -147,7 +149,27 @@ function createFigmaStub(opts) {
       n.boundVariables[field] = TEXTUAL.indexOf(field) >= 0 || field === "fontFamily" ? [alias] : alias;
       applyBinding(n, field, varStore[v.id]);
     };
-    if (type === "COMPONENT") n.createInstance = () => { const i = cloneNode(n, "INSTANCE"); page().appendChild(i); return i; };
+    if (type === "COMPONENT") n.createInstance = () => { const i = cloneNode(n, "INSTANCE"); i._main = n; page().appendChild(i); return i; };
+    if (type === "INSTANCE") {
+      n._main = null;
+      Object.defineProperty(n, "mainComponent", { enumerable: false, configurable: true, get() { return n._main; } });
+      n.swapComponent = (comp) => {
+        if (!comp || comp.type !== "COMPONENT") throw new Error("Expected a ComponentNode");
+        if (swapMode === "throw") throw new Error("Cannot swap component of a nested instance");
+        if (swapMode === "noop") return;                    // 기록도 반영도 없음 (리드백이 잡아야 함)
+        n._main = comp;
+        // 실제 Figma 처럼 자식·크기를 새 마스터 기준으로 재구성
+        n.children = [];
+        for (const c of comp.children || []) { const k = cloneNode(c); k.parent = n; n.children.push(k); }
+        n.width = comp.width; n.height = comp.height;
+        if (comp._icon) n._icon = comp._icon;
+        if (swapMode === "lossy") {
+          // 스왑이 서브레이어 색 오버라이드를 보존하지 못하는 모델 — 재색칠 필요성을 증명
+          const wipe = (m) => { if (m.type === "VECTOR") m.strokes = [{ type: "SOLID", color: { r: 0, g: 0, b: 0 }, opacity: 1 }]; (m.children || []).forEach(wipe); };
+          n.children.forEach(wipe);
+        }
+      };
+    }
     if (type === "INSTANCE") n.detachInstance = () => {
       const f = cloneNode(n, "FRAME");
       const p = n.parent;
@@ -168,7 +190,9 @@ function createFigmaStub(opts) {
     const n = makeNode(asType || src.type, src.name);
     for (const k of SHAPE_KEYS[src.type] || []) if (k in src) n[k] = clone(src[k]);
     n.boundVariables = clone(src.boundVariables);
-    n._plugin = clone(src._plugin);
+    if (inheritPluginData) n._plugin = clone(src._plugin);   // notInherited 축: 코드가 pluginData 에 의존하지 않음을 증명
+    if (src._icon) n._icon = src._icon;
+    if (src._main) n._main = src._main;   // 컴포넌트 마스터 안의 아이콘 인스턴스가 미러링될 때 링크 유지 (중첩 스왑의 전제)
     if (src.children) for (const c of src.children) n.appendChild(cloneNode(c));
     return n;
   }
@@ -222,6 +246,8 @@ function createFigmaStub(opts) {
       v.strokes = [{ type: "SOLID", color: { r: 0, g: 0, b: 0 }, opacity: 1 }];
       f.appendChild(v);
       f._svgLen = String(svg).length;   // 두 실행이 같은 SVG 를 만들었는지 확인용
+      const m = /data-icon="([^"]+)"/.exec(String(svg));
+      if (m) f._icon = m[1];            // 합성 SVG 의 아이콘명 → 트리 비교로 "어느 자리에 어떤 아이콘" 단언 가능
       page().appendChild(f);
       return f;
     },
@@ -230,6 +256,8 @@ function createFigmaStub(opts) {
       for (const k of SHAPE_KEYS.FRAME) if (k in node) c[k] = clone(node[k]);
       c.boundVariables = clone(node.boundVariables);
       c._plugin = clone(node._plugin);
+      if (node._icon) c._icon = node._icon;
+      if (node._svgLen) c._svgLen = node._svgLen;
       const p = node.parent, idx = p ? p.children.indexOf(node) : -1;
       const kids = (node.children || []).slice();
       for (const k of kids) c.appendChild(k);

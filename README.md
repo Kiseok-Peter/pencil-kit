@@ -110,6 +110,7 @@ node test/verify-bindings.js --data ../초코로드/export
   - 리터럴을 먼저 정확히 대입한 뒤 바인딩하고, 리드백이 어긋나면 되돌린다 → 바인딩이 실패해도 **결과물이 나빠지지 않는다**
   - `lineHeight` 는 Figma 가 변수 바인딩 시 단위를 PIXELS 로 강제해서 제외 (자세히는 RUNBOOK.md)
 - **lucide 아이콘** → 플러그인이 unpkg/jsdelivr CDN에서 SVG 받아 벡터화
+  - 인스턴스에서 **아이콘이 교체되는 자리**는 아이콘을 컴포넌트(`DS - Icon Components` 페이지)로 만들고 `swapComponent` 로 교체 — 컴포넌트 연결을 유지한 채 오버라이드가 적용된다 (교체 없는 아이콘은 기존처럼 벡터)
 - **이미지** → base64 → `figma.createImage` fill
 - **auto-layout / 패딩 / 정렬 / fill_container·fit_content / absolute** → Figma auto-layout 매핑
 

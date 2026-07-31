@@ -87,6 +87,7 @@ def main():
     screens = sum(1 for n in nodes if isinstance(n, dict) and not n.get("reusable"))
 
     orphan_refs, bad_icons, var_refs = set(), {}, set()
+    node_icons, override_icons = set(), set()   # 아이콘 수집 커버리지 (build.py 와 같은 기준)
     typo_type_bad = []                      # (변수명, 실제타입, 기대타입)
     typo_lit = {k: 0 for k in TYPO_STR_KEYS + TYPO_NUM_KEYS}   # 리터럴 개수
     typo_set = {k: 0 for k in TYPO_STR_KEYS + TYPO_NUM_KEYS}   # 값이 있는 개수
@@ -132,6 +133,12 @@ def main():
             lib = n.get("library") or "lucide"
             if isinstance(lib, str) and lib not in SUPPORTED_ICON_LIBS:
                 bad_icons[lib] = bad_icons.get(lib, 0) + 1
+            if n.get("icon"):
+                node_icons.add(n["icon"])
+        elif "type" not in n and n.get("icon"):
+            # descendants 오버라이드의 아이콘 교체 — icon 노드가 한 번도 안 쓴 아이콘이면
+            # build.py 가 SVG 를 수집하는지가 중요하다 (예전엔 놓쳐서 15종이 다운로드되지 않았다)
+            override_icons.add(n["icon"])
         for k, v in n.items():
             if k not in ("children", "descendants", "content"):
                 collect_var_refs(v, var_refs)
@@ -177,6 +184,9 @@ def main():
     line(not orphan_refs, f"ref 해소: 끊긴 참조 {len(orphan_refs)}개" + (f" {sorted(orphan_refs)}" if orphan_refs else ""))
     line(trunc == 0, f"절단 마커(...): {trunc}개" + (" — depth 부족, 해당 id 만 재추출 필요" if trunc else ""))
     line(not bad_icons, f"미지원 아이콘 라이브러리: {bad_icons}" if bad_icons else "아이콘 라이브러리: 전부 지원됨")
+    ov_only = sorted(override_icons - node_icons)
+    line(True, f"아이콘: icon 노드 {len(node_icons)}종 + 오버라이드 전용 {len(ov_only)}종 = 수집 대상 {len(node_icons | override_icons)}종"
+         + (f" (오버라이드 전용: {' '.join(ov_only)})" if ov_only else ""))
     line(not undefined_vars, f"정의 안 된 변수 참조: {undefined_vars}" if undefined_vars else "변수 참조: 전부 정의됨")
     line(not typo_type_bad,
          "타이포 변수 타입: fontFamily/fontWeight=string · fontSize/lineHeight/letterSpacing=number 일치"
