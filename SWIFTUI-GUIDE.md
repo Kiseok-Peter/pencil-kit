@@ -39,7 +39,7 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 | `width/height: 숫자` | `.frame(width:height:)` |
 | `fill_container` | `.frame(maxWidth: .infinity)` (또는 maxHeight) |
 | `fit_content` / 생략 | 내용 크기 (frame 미지정) |
-| `text` | `Text(content)` + `.font(.system(size: fontSize, weight:))` |
+| `text` + **`preset`** | `Text(content).dsText(.프리셋)` — 프리셋이 크기·굵기·행간·자간을 통째로 소유 (3-1절). `preset` 이 없을 때만 아래 낱개 매핑으로 폴백 |
 | `fontFamily` (`"Outfit"` / `$font-*` 변수 참조여도) | **무시** — 항상 `.system` (고정 규칙 1) |
 | `fontSize` (숫자 / `$fontsize-*`) | `.font(.system(size:))` — pt 그대로 |
 | `fontWeight` `"400"`·`"normal"` / `"500"` / `"600"` / `"700"` | `.regular` / `.medium` / `.semibold` / `.bold` |
@@ -90,7 +90,33 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 
 라이트/다크는 Asset Catalog가 자동 전환하므로, 토큰을 Color Set으로 만들면 다크모드가 공짜로 됩니다.
 
-### 3-1) 타이포 토큰 접두 규약 (Phase 2 에서 도입)
+### 3-1) 타이포: **프리셋을 쓴다. 낱개 토큰은 프리셋 정의에서만 참조한다.**
+
+`swiftui-input.json` / `design-data.json` 의 **`typographyStyles`** 가 단일 진실이다.
+
+```json
+"typographyStyles": {
+  "styles": {
+    "body-emphasis":        { "group":"body", "fontFamily":"font-body",
+                              "fontSize":"fontsize-body", "fontWeight":"fontweight-semibold" },
+    "body-small-multiline": { "group":"body", "fontFamily":"font-body",
+                              "fontSize":"fontsize-body-small", "fontWeight":"fontweight-regular",
+                              "lineHeight":"lineheight-body", "multiline": true }
+  },
+  "aliases": { "input-text": "body", "chip-label": "label-subtle" }
+}
+```
+
+- 각 텍스트 노드에는 **`preset` 필드**가 붙어 있다(`extract-for-swiftui.py` 주입) → 그 이름을 그대로 쓴다.
+- **`aliases` 는 값을 갖지 않는다** — 가리키는 프리셋에 위임한다. 복제하면 두 벌이 갈라진다.
+- **미지정 축은 키가 없다** = "그 축을 건드리지 않는다". `lineHeight` 키가 없으면 `.lineSpacing` 을 붙이지 않는다.
+- **`multiline: true`** 는 여러 줄 전용(행간 포함). 단일라인에 쓰면 줄간격이 벌어진다 —
+  실측상 이 디자인의 행간은 `textGrowth: fixed-width` 노드에만 붙는다.
+
+> ⚠️ **낱개 축을 공개 API 로 노출하지 마라.** `dsText(.appTitle, .bold).tracking(...)` 처럼 되면
+> 호출부가 매번 조합을 기억해야 하고, 프리셋을 바꿔도 호출부가 안 따라온다. 공개하는 건 프리셋뿐이다.
+
+프리셋이 참조하는 **낱개 토큰의 접두 규약** (프리셋 정의를 구현할 때만 쓴다):
 
 | 접두 | 타입 | 예 | SwiftUI |
 |---|---|---|---|
@@ -98,6 +124,10 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 | `fontweight-` | **string** | `fontweight-body: "500"` | `Font.Weight` (`.medium`) |
 | `lineheight-` | number (배수) | `lineheight-body-small: 1.5` | `.lineSpacing(size × (배수−1))` |
 | `tracking-` | number (pt) | `tracking-app-title: -1` | `.tracking(-1)` |
+
+> **왜 프리셋이 별도 파일인가**: Pencil·Figma 모두 변수 타입이 4종(bool/color/number/string)뿐이라
+> "세트"를 변수로 등록할 수 없다. 그래서 프리셋의 단일 진실을 `.pen` 의 `DS - Typography` 프레임에 두고
+> `make-typography-styles.py` 가 기계가독 형태로 옮긴다. Figma 는 같은 파일로 **Text Style** 을 만든다.
 
 > 이름 규칙: iOS `Scripts/gen-design-tokens.py` 가 **첫 하이픈 앞** 세그먼트로 버킷을 분류한다
 > (`name.partition("-")`). `font-size-body` 는 버킷이 `font` 로 잡혀 **에러** — `fontsize-body` 처럼 붙여 쓴다.

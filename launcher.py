@@ -97,6 +97,9 @@ def act_merge(state):
     args = ["--data", state["data"]] + (["--inventory", "_inventory.json"] if os.path.exists(inv) else [])
     py("merge-nodes.py", *args)
 
+def act_typostyles(state):
+    if _need_data(state): py("make-typography-styles.py", "--data", state["data"])
+
 def act_verify(state):
     if _need_data(state): py("verify.py", "--data", state["data"])
 
@@ -131,6 +134,9 @@ MENU = [
     ("build   · design-data.json 재생성", act_build,
      "pen-nodes.json + variables.json + 이미지를 합쳐 design-data.json 을 다시 만듭니다. "
      ".pen 을 추출/수정한 뒤 실행하세요. (Figma 임포트·SwiftUI 추출의 재료 파일)"),
+    ("typo    · 타이포 프리셋 배출", act_typostyles,
+     "DS - Typography 프레임의 견본 노드를 읽어 typography-styles.json 을 만듭니다. "
+     "Figma 는 이걸로 Text Style 을, iOS 는 프리셋 열거형을 만들어요. .pen 의 프레임을 고쳤으면 다시 실행하세요."),
     ("verify  · 데이터 무결성 검사", act_verify,
      "export 데이터가 멀쩡한지 검사합니다: 끊긴 ref, 절단(...), 미지원 아이콘, 정의 안 된 변수. "
      "변환 전에 돌려 문제를 미리 잡는 프리플라이트."),

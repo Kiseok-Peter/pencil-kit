@@ -37,6 +37,24 @@ Claude 는 **그 단계 하나만 수행한 뒤 멈춥니다.** 결과를 확인
 DesignSystem 모듈에 배치하고 멈춘다.
 ⚠️ **`Font.custom` 금지 · 폰트 파일/Info.plist 등록 불필요** (GUIDE 고정 규칙 1 — 커스텀 폰트를 쓰지 않는다)
 
+## Step 1-T — DesignSystem: 타이포 프리셋  ★ Step 3 의 선행 조건
+**트리거:** "SWIFTUI-RUNBOOK Step 1-T: 타이포 프리셋 만들어줘"
+**전제:** `python3 make-typography-styles.py --data <프로젝트>/export` 를 돌려
+`<export>/typography-styles.json` 이 있어야 한다 (없으면 `extract-for-swiftui.py` 가 경고한다).
+
+**Claude 가 할 일:** `typographyStyles.styles` → **프리셋 열거형 + 단일 진입 modifier** 를 만든다.
+- 프리셋 하나가 (크기·굵기·행간·자간) **세트**를 소유한다 → 호출부는 프리셋만 고른다
+- `aliases` → 같은 프리셋을 가리키는 역할 이름(예: `inputText` → `body`). 값을 복제하지 말고 **위임**한다
+- `multiline: true` 프리셋은 여러 줄 전용 — 행간이 붙어 있어 단일라인에 쓰면 줄간격이 벌어진다
+- 미지정 축은 키가 아예 없다 → **그 축을 건드리지 않는다** (`lineheight` 없으면 `.lineSpacing` 미부착)
+
+```swift
+Text("초코로드").dsText(.appTitle)        // ✅ 프리셋이 굵기·자간·행간을 안다
+Text("초코로드").dsText(.appTitle, .bold) // ❌ 호출부가 조합을 기억하는 형태로 되돌아감
+```
+DesignSystem 모듈에 배치하고 멈춘다.
+⚠️ **낱개 상수(`DSFontSize`/`DSFontWeight`)를 공개 API 로 노출하지 않는다** — 프리셋 정의 내부에서만 참조.
+
 ## Step 2 — DesignSystem: 아이콘  ⚠️ Pencil 필요
 **트리거:** "SWIFTUI-RUNBOOK Step 2: 아이콘 PDF 뽑아서 Asset Catalog 에 넣어줘"
 **Claude 가 할 일:**
@@ -50,7 +68,9 @@ DesignSystem 모듈에 배치하고 멈춘다.
 **트리거:** "SWIFTUI-RUNBOOK Step 3: 컴포넌트들 재사용 View 로 만들어줘"
 **Claude 가 할 일:** `design-data.json` 의 `components`(reusable 52개) → 각각 재사용 SwiftUI `View`.
 - 인스턴스가 자주 바꾸는 값(텍스트/아이콘/상태) → View 파라미터
-- Step 1 토큰 + Step 2 아이콘 사용
+- Step 1 토큰 + **Step 1-T 프리셋** + Step 2 아이콘 사용
+- 텍스트 노드의 **`preset` 필드를 그대로 쓴다** (`extract-for-swiftui.py` 가 주입). 필드가 없으면
+  프리셋 밖 조합이라는 뜻 → 낱개 토큰으로 폴백하고 사용자에게 보고한다
 DesignSystem 모듈에 배치하고 멈춘다.
 
 > 여기까지가 **공유 기반**. 이제 Feature 는 이걸 import 만 함.

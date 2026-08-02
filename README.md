@@ -33,6 +33,8 @@ pencil/
     export/                   ← 이 프로젝트의 데이터 (아래 파일들)
       pen-nodes.json          Pencil MCP(execute+Get) 추출 노드 트리 (컴포넌트+화면)
       variables.json          색상/숫자/문자 토큰 (light/dark)
+      typography-styles.json  타이포 프리셋 (make-typography-styles.py 산출물 — 프리셋의 단일 진실)
+      typography-aliases.json (선택) 역할 별칭 — 손으로 관리, 값 없이 프리셋을 가리킴
       design-data.json        build.py 산출물 (Figma 플러그인 입력, 이미지 base64 임베드)
       SCREEN-MODULE-MAP.md     (SwiftUI) 화면→Feature 모듈 매핑 — 프로젝트별
       _link_*.json _screen_ids.json  분석 기록
@@ -57,7 +59,8 @@ cd pencil-kit && python3 launcher.py
 | `launcher.py` | **통합 런처**(화살표 메뉴+탭완성) — 아래 스크립트를 감쌈 | 진입점 |
 | `build.py` | pen-nodes+variables+images → `design-data.json` | 공통 |
 | `merge-nodes.py` | 부분 추출 결과(part)를 id 기준 병합 — 증분 추출 지원 | 공통 |
-| `verify.py` | export 데이터 무결성 검증(ref·절단·아이콘·변수·타이포) | 공통 |
+| `verify.py` | export 데이터 무결성 검증(ref·절단·아이콘·변수·타이포·프리셋 커버리지) | 공통 |
+| `make-typography-styles.py` | `DS - Typography` 프레임 → `typography-styles.json` (Figma Text Style · iOS 프리셋 공용 원본). 카탈로그 자기점검 2종 포함 — 라이트·다크판 대조, 설명글·실제값 대조 | 공통 |
 | `diff.py` | 지난 스냅샷 대비 변경(컴포넌트/화면/토큰 +~-) 감지 | 공통 |
 | `PENCIL-MCP-NOTES.md` | `.pen` 편집 시 MCP 함정 모음(실측) | 공통 |
 | `manifest.json` `code.js` `ui.html` | Figma 플러그인 본체 | Figma |
@@ -83,7 +86,10 @@ python3 extract-for-swiftui.py --data ../초코로드/export "리뷰 작성"
 python3 make-icon-ids.py --data ../초코로드/export
 # 아이콘 PDF 정사각 정규화 (Asset Catalog 폴더 대상)
 python3 pad-icons.py <아이콘PDF폴더>
-# 무결성 검증 (변환 전 프리플라이트; --strict-typo = 타이포 토큰화 완료 게이트)
+# 타이포 프리셋 배출 (DS - Typography 프레임 → 프리셋 JSON)
+#   --check = "전부 맞춰져 있나" 확인 모드: 프레임↔JSON 어긋남 + 카탈로그 자기점검을 전부 실패로 본다
+python3 make-typography-styles.py --data ../초코로드/export
+# 무결성 검증 (변환 전 프리플라이트; --strict-typo = 타이포 토큰화 + 프리셋 커버리지 게이트)
 python3 verify.py --data ../초코로드/export
 # 부분 추출 병합 (증분 재추출 — RUNBOOK.md 절차 5~6)
 python3 merge-nodes.py --data ../초코로드/export --inventory _inventory.json

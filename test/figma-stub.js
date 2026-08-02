@@ -54,7 +54,9 @@ const DEFAULTS = {
   primaryAxisAlignItems: "MIN", counterAxisAlignItems: "MIN", clipsContent: true,
   layoutSizingHorizontal: "FIXED", layoutSizingVertical: "FIXED", layoutPositioning: "AUTO",
   characters: "", fontSize: 12, fontWeight: 400,
-  letterSpacing: { value: 0, unit: "PIXELS" }, lineHeight: { value: 100, unit: "PERCENT" },
+  // 실제 Figma 의 새 TextNode 기본 행간은 AUTO(폰트 내장값)다. PERCENT 100 으로 두면
+  // "행간 없는 프리셋(AUTO) 을 붙였을 때 값이 바뀐다"는 가짜 회귀가 잡힌다.
+  letterSpacing: { value: 0, unit: "PIXELS" }, lineHeight: { unit: "AUTO" },
   textAlignHorizontal: "LEFT", textAlignVertical: "TOP", textAutoResize: "NONE",
   paragraphSpacing: 0, paragraphIndent: 0,
   arcData: { startingAngle: 0, endingAngle: 0, innerRadius: 0 }, pointCount: 3,
@@ -65,12 +67,14 @@ function createFigmaStub(opts) {
   const behavior = opts.behavior || "honest";
   const swapMode = opts.swap || "ok";              // 인스턴스 스왑 모델: ok | throw | noop | lossy
   const outlineMode = opts.outline || "ok";        // outlineStroke 모델: ok | fail(null 반환 → 크기별 폴백)
+  const textStyleMode = opts.textStyle || "ok";    // Text Style 모델: ok | unsupported(createTextStyle 예외) | detach(적용해도 안 붙음)
   const inheritPluginData = opts.pluginData !== "notInherited";
   const fonts = opts.fonts || FULL_FONTS;
   const rng = makeRng(opts.seed == null ? 12345 : opts.seed);
   const installed = new Set(fonts.map((f) => f.family + "||" + f.style));
   const varStore = {};          // id -> {id, name, resolvedType, valuesByMode, description}
   const collections = [];       // 이름으로 재사용되는지 확인하려면 실제 Figma 처럼 보관해야 한다
+  const textStyles = [];        // Text Style 도 이름으로 재사용되는지 봐야 하므로 문서 자원처럼 보관
   let seq = 0;
   let imgSeq = 0;               // 이미지 해시는 별도 카운터 — 변수/노드 개수에 흔들리면 안 된다
   const nextId = (p) => p + ":" + ++seq;
@@ -131,7 +135,27 @@ function createFigmaStub(opts) {
         set(v) { cr = v; n.topLeftRadius = n.topRightRadius = n.bottomRightRadius = n.bottomLeftRadius = v; },
       });
     }
-    if (type === "TEXT") n.fontName = { family: "Inter", style: "Regular" };
+    if (type === "TEXT") {
+      n.fontName = { family: "Inter", style: "Regular" };
+      // 스타일을 붙이면 Figma 는 스타일의 타이포 속성을 노드에 반영한다. 값이 같으면 시각 변화가 없고,
+      // 다르면 노드가 스타일 값으로 바뀐다 → 플러그인의 리드백이 이 차이를 잡아내야 한다.
+      let tsid = "";
+      Object.defineProperty(n, "textStyleId", {
+        enumerable: true, configurable: true,
+        get() { return tsid; },
+        set(v) {
+          if (!v) { tsid = ""; return; }
+          const st = textStyles.find((s) => s.id === v);
+          if (!st) throw new Error("No text style with id " + v);
+          if (textStyleMode === "detach") { tsid = ""; return; }   // 붙였다고 보고되지 않는 환경
+          tsid = v;
+          n.fontName = clone(st.fontName);
+          n.fontSize = st.fontSize;
+          n.letterSpacing = clone(st.letterSpacing);
+          n.lineHeight = clone(st.lineHeight);
+        },
+      });
+    }
     if (type === "VECTOR") {
       n.constraints = { horizontal: "MIN", vertical: "MIN" };
       n.outlineStroke = () => {
@@ -208,6 +232,7 @@ function createFigmaStub(opts) {
     const n = makeNode(asType || src.type, src.name);
     for (const k of SHAPE_KEYS[src.type] || []) if (k in src) n[k] = clone(src[k]);
     n.boundVariables = clone(src.boundVariables);
+    if (src.textStyleId) n.textStyleId = src.textStyleId;    // 인스턴스는 마스터의 Text Style 도 물려받는다
     if (inheritPluginData) n._plugin = clone(src._plugin);   // notInherited 축: 코드가 pluginData 에 의존하지 않음을 증명
     if (src._icon) n._icon = src._icon;
     if (src._main) n._main = src._main;   // 컴포넌트 마스터 안의 아이콘 인스턴스가 미러링될 때 링크 유지 (중첩 스왑의 전제)
@@ -247,6 +272,30 @@ function createFigmaStub(opts) {
     // 실제 Figma 처럼 새 노드는 currentPage 에 붙는다 (importDesign 이 frame.parent 로 페이지를 판별한다)
     createFrame: () => { const n = makeNode("FRAME", "Frame"); page().appendChild(n); return n; },
     createText: () => { const n = makeNode("TEXT", "Text"); page().appendChild(n); return n; },
+    // ---- Text Style ----
+    // 스타일은 노드가 아니라 문서 자원이다: 페이지에 붙지 않고, setBoundVariable 은 노드와 같은 모델을 쓴다
+    // (스타일에서의 강제 단위 동작이 노드와 다르다는 근거가 없으므로 같은 applyBinding 을 태운다 —
+    //  플러그인은 어느 쪽이든 리드백+되돌림으로 방어하므로 이 모델이 더 보수적이다).
+    createTextStyle: () => {
+      if (textStyleMode === "unsupported") throw new Error("createTextStyle is not available");
+      const s = {
+        type: "TEXT", id: nextId("S"), name: "", boundVariables: {},
+        fontName: { family: "Inter", style: "Regular" }, fontSize: 16,
+        letterSpacing: { value: 0, unit: "PIXELS" }, lineHeight: { unit: "AUTO" },
+        remove() { const i = textStyles.indexOf(s); if (i >= 0) textStyles.splice(i, 1); },
+      };
+      s.setBoundVariable = (field, v) => {
+        if (v === null || v === undefined) { delete s.boundVariables[field]; return; }
+        if (!v || !v.id || !varStore[v.id]) throw new Error("Expected a Variable object");
+        const alias = { type: "VARIABLE_ALIAS", id: v.id };
+        s.boundVariables[field] = TEXTUAL.indexOf(field) >= 0 || field === "fontFamily" ? [alias] : alias;
+        applyBinding(s, field, varStore[v.id]);
+      };
+      textStyles.push(s);
+      return s;
+    },
+    getLocalTextStylesAsync: async () => textStyles.slice(),
+    getLocalTextStyles: () => textStyles.slice(),
     createRectangle: () => { const n = makeNode("RECTANGLE", "Rectangle"); page().appendChild(n); return n; },
     createEllipse: () => { const n = makeNode("ELLIPSE", "Ellipse"); page().appendChild(n); return n; },
     createPolygon: () => { const n = makeNode("POLYGON", "Polygon"); page().appendChild(n); return n; },

@@ -30,6 +30,7 @@ function resetState() {
   DBG = []; ROOT_FILL_OVR = 0;
   LOADED = new Set(); FONT_RESOLVED = {};
   BIND_STAT = {}; CAP = {};
+  TEXT_STYLES = {}; STYLE_BY_AXES = {}; TS_ALIASES = {};
   ICON_COMP = {}; ICON_COMP_IDS = new Set(); ICON_SLOTS = {};
 }
 
@@ -702,6 +703,9 @@ function buildText(spec) {
 // 리터럴이 완성된 뒤에만 호출한다. 모든 실패는 언바인딩 → 리터럴 유지 → 시각 회귀 0.
 function bindTypography(t, spec, fnt) {
   if (!OPT.bindTokens) return;
+  // 프리셋(Text Style)이 5축을 통째로 소유하면 개별 바인딩은 하지 않는다 —
+  // 스타일이 붙은 노드에 같은 필드를 또 바인딩하면 Figma 가 스타일을 detach 시킨다.
+  if (applyTextStyle(t, spec)) return;
   if (typeof resolveNum(spec.fontSize) === "number")
     bindField(t, "fontSize", spec.fontSize, "FLOAT", t.fontSize);
   const lsv = resolveNum(spec.letterSpacing);
@@ -742,6 +746,8 @@ function bindFontWeight(node, ref, fnt) {
 function fontKey(f) { return f ? f.family + "||" + f.style : null; }
 function fontKeyOf(n) { return n.fontName && n.fontName !== figma.mixed ? fontKey(n.fontName) : null; }
 function lsKey(n) { return n.letterSpacing ? n.letterSpacing.unit + ":" + n.letterSpacing.value : null; }
+// AUTO 는 value 가 없다 → "AUTO:" 로 정규화 (미지정 행간끼리도 비교가 되게)
+function lhKey(n) { return n.lineHeight ? n.lineHeight.unit + ":" + (n.lineHeight.value === undefined ? "" : n.lineHeight.value) : null; }
 
 // ---- 프레임 빌드 ----
 function buildFrame(spec) {
@@ -1238,17 +1244,20 @@ function varObjFor(ref, wantType) {
  * @param restoreFn 되돌릴 때 리터럴을 복구하는 함수. readFn 을 주면 **반드시 같이** 줘야 한다 —
  *                  fontFamily/fontWeight 는 실제 저장소가 node.fontName 이라 node[field] 대입으로 복구되지 않는다.
  */
-function bindField(node, field, ref, wantType, expect, readFn, restoreFn) {
+// @param statField 집계·차단 키를 field 와 다르게 쓸 때 (TextStyle 은 "style:fontSize" 처럼 분리해
+//                  노드 바인딩 통계와 섞이지 않게 한다. 지원 여부도 노드와 별개로 판정되므로 CAP 도 이 키로 본다)
+function bindField(node, field, ref, wantType, expect, readFn, restoreFn, statField) {
+  const SF = statField || field;
   if (!OPT.bindTokens) return false;
   if (typeof ref !== "string" || ref[0] !== "$") return false;   // 리터럴 = 바인딩 대상 아님
-  if (CAP[field] === false) { stat(field, "skip"); return false; }
+  if (CAP[SF] === false) { stat(SF, "skip"); return false; }
   const v = varObjFor(ref, wantType);
-  if (!v) { stat(field, "skip", ref + " — 변수 없음/타입 불일치"); return false; }
-  if (!node || typeof node.setBoundVariable !== "function") { stat(field, "skip", "setBoundVariable 미지원 노드"); return false; }
+  if (!v) { stat(SF, "skip", ref + " — 변수 없음/타입 불일치"); return false; }
+  if (!node || typeof node.setBoundVariable !== "function") { stat(SF, "skip", "setBoundVariable 미지원 노드"); return false; }
   try {
     node.setBoundVariable(field, v);
   } catch (e) {
-    stat(field, "error", (node.name || "?") + ": " + (e && e.message));
+    stat(SF, "error", (node.name || "?") + ": " + (e && e.message));
     return false;
   }
   try {
@@ -1257,18 +1266,18 @@ function bindField(node, field, ref, wantType, expect, readFn, restoreFn) {
       try { node.setBoundVariable(field, null); } catch (e2) {}
       // 값까지 틀어졌을 수 있으니 리터럴을 되돌린다 (언바인딩만으로는 복구되지 않는다)
       try { if (restoreFn) restoreFn(node); else node[field] = expect; } catch (e3) {}
-      const s = stat(field, "revert", (node.name || "?") + ": " + JSON.stringify(got) + " ≠ " + JSON.stringify(expect));
+      const s = stat(SF, "revert", (node.name || "?") + ": " + JSON.stringify(got) + " ≠ " + JSON.stringify(expect));
       // 서킷 브레이커는 "이 필드가 근본적으로 안 먹는다"일 때만 — 성공 이력이 있으면 개별 예외일 뿐이므로 계속 시도한다
-      if (s.revert >= 3 && s.ok === 0) { CAP[field] = false; DBG.push("바인딩 중단: " + field + " — 되돌림 3회, 성공 0"); }
+      if (s.revert >= 3 && s.ok === 0) { CAP[SF] = false; DBG.push("바인딩 중단: " + SF + " — 되돌림 3회, 성공 0"); }
       return false;
     }
   } catch (e) {
     try { node.setBoundVariable(field, null); } catch (e2) {}
     try { if (restoreFn) restoreFn(node); else node[field] = expect; } catch (e3) {}
-    stat(field, "error", "리드백 실패: " + (e && e.message));
+    stat(SF, "error", "리드백 실패: " + (e && e.message));
     return false;
   }
-  stat(field, "ok");
+  stat(SF, "ok");
   return true;
 }
 
@@ -1376,6 +1385,182 @@ async function probeCapabilities() {
   if (note.length) DBG.push("바인딩 프로브: " + note.join(" · "));
 }
 
+// ---- 타이포 프리셋 → Figma Text Style ----
+// 왜: Pencil·Figma 모두 변수 타입이 4종(bool/color/number/string)뿐이라 "프리셋"(크기·굵기·행간·자간 세트)을
+// 변수로는 표현할 수 없다. Figma 에서 프리셋의 제자리는 **Text Style** 이고, TextStyle 은 setBoundVariable 로
+// 필드별 변수 바인딩까지 받는다 → 프리셋과 토큰을 동시에 만족시킬 수 있는 유일한 경로.
+// 덤: lineHeight 는 노드에 변수를 걸면 단위가 PIXELS 로 강제돼 배수(1.5)가 1.5px 이 되지만,
+// Text Style 에는 **PERCENT 리터럴**로 담기므로 지금까지 유일하게 복구 불가였던 손실이 여기서 해소된다.
+let TEXT_STYLES = {};      // 프리셋 이름 -> TextStyle
+let STYLE_BY_AXES = {};    // 5축 키 -> 프리셋 이름
+let TS_ALIASES = {};       // 별칭 -> 프리셋 (Figma 스타일은 만들지 않는다 — 값이 같아 스타일만 늘어난다)
+
+// 5축 신원. 노드는 "$토큰", 프리셋 정의는 "토큰" 이라 노드 쪽 $ 를 떼고 맞춘다
+// (make-typography-styles.py / verify.py TYPO_AXES 와 같은 계약 — 조합은 유일함이 보장돼 있다)
+const TS_AXES = ["fontFamily", "fontSize", "fontWeight", "letterSpacing", "lineHeight"];
+function axesKeyOfSpec(spec) {
+  const p = [];
+  for (const a of TS_AXES) {
+    const v = spec[a];
+    p.push(typeof v === "string" && v[0] === "$" ? v.slice(1) : (v === undefined ? "" : String(v)));
+  }
+  return p.join("|");
+}
+function axesKeyOfPreset(def) {
+  const p = [];
+  for (const a of TS_AXES) p.push(def[a] === undefined ? "" : String(def[a]));
+  return p.join("|");
+}
+
+// 프리셋 정의를 Pencil 노드 스펙 모양("$토큰")으로 되돌린다 — textFontOf/resolveNum 을 그대로 재사용하려고
+function specOfPreset(def) {
+  const s = {};
+  for (const a of TS_AXES) if (def[a] !== undefined) s[a] = "$" + def[a];
+  return s;
+}
+
+// 스타일에서만 가능한 것과 불가능한 것을 임시 스타일 1개로 한 번만 측정한다 (probeCapabilities 와 같은 철학).
+// 특히 lineHeight: 노드에서는 바인딩이 PIXELS 로 강제돼 배수가 깨지지만, 스타일에서도 그런지는
+// 공식 문서에 없다 → 실측해서 되면 걸고, 안 되면 CAP 으로 막아 프로덕션에서 되돌림이 안 나게 한다.
+function probeTextStyle() {
+  const note = [];
+  let st = null;
+  try {
+    st = figma.createTextStyle();
+    st.name = "__pencil_probe__";
+    st.fontName = ANY_FONT;
+    const lh = probeVar(LINEHEIGHT_RE, "FLOAT");
+    if (lh && typeof st.setBoundVariable === "function") {
+      st.lineHeight = { value: 150, unit: "PERCENT" };
+      try {
+        st.setBoundVariable("lineHeight", lh.v);
+        const got = st.lineHeight;
+        const kept = got && got.unit === "PERCENT" && got.value === 150;
+        if (!kept) { CAP["style:lineHeight"] = false; note.push("lineHeight=바인딩 시 " + JSON.stringify(got) + " → 리터럴 PERCENT 유지"); }
+        else note.push("lineHeight=바인딩 가능(PERCENT 유지)");
+      } catch (e) { CAP["style:lineHeight"] = false; note.push("lineHeight=예외(" + (e && e.message) + ")"); }
+    } else if (lh) {
+      CAP["style:lineHeight"] = false; note.push("lineHeight=setBoundVariable 미지원");
+    }
+  } catch (e) {
+    CAP["style"] = false;
+    DBG.push("Text Style 프로브 실패 — 프리셋 없이 진행: " + (e && e.message));
+    if (st) { try { st.remove(); } catch (e2) {} }
+    return false;
+  }
+  if (st) { try { st.remove(); } catch (e) {} }
+  if (note.length) DBG.push("Text Style 프로브: " + note.join(" · "));
+  return true;
+}
+
+async function createTextStyles(tsData) {
+  TEXT_STYLES = {}; STYLE_BY_AXES = {}; TS_ALIASES = {};
+  if (!OPT.bindTokens || !tsData || !tsData.styles) return;
+  TS_ALIASES = tsData.aliases || {};
+
+  // 이름으로 재사용 (재임포트마다 스타일이 불어나는 걸 막는다 — 컬렉션 재사용과 같은 방침)
+  let existing = {};
+  try {
+    const list = await figma.getLocalTextStylesAsync();
+    for (const s of list) existing[s.name] = s;
+  } catch (e) { DBG.push("기존 Text Style 조회 실패: " + (e && e.message)); }
+
+  if (typeof figma.createTextStyle !== "function") {
+    DBG.push("Text Style 미지원 환경 — 프리셋 없이 노드별 바인딩으로 진행");
+    CAP["style"] = false;
+    return;
+  }
+  if (!probeTextStyle()) return;   // 생성 자체가 안 되면 CAP.style=false 로 두고 전체를 건너뛴다
+
+  let made = 0;
+  for (const name in tsData.styles) {
+    const def = tsData.styles[name];
+    const spec = specOfPreset(def);
+    // Figma 는 "/" 를 폴더로 취급한다 → 패널에서 heading/body/caption/system 으로 묶인다
+    const styleName = (def.group ? def.group + "/" : "") + name;
+    let st = existing[styleName];
+    try {
+      if (!st) { st = figma.createTextStyle(); st.name = styleName; }
+    } catch (e) { DBG.push("Text Style 생성 실패 " + styleName + ": " + (e && e.message)); CAP["style"] = false; return; }
+
+    // 1) 리터럴 먼저 — 바인딩이 전부 실패해도 스타일 자체는 정확하다 (노드 바인딩과 같은 안전 순서)
+    const fnt = textFontOf(spec);
+    try { st.fontName = fnt; } catch (e) { DBG.push("스타일 폰트 실패 " + styleName + ": " + (e && e.message)); }
+    const fsz = resolveNum(spec.fontSize);
+    if (typeof fsz === "number") { try { st.fontSize = fsz; } catch (e) {} }
+    const ls = resolveNum(spec.letterSpacing);
+    try { st.letterSpacing = typeof ls === "number" ? { value: ls, unit: "PIXELS" } : { value: 0, unit: "PIXELS" }; } catch (e) {}
+    const lh = resolveNum(spec.lineHeight);
+    // ★ 배수 → PERCENT. 미지정은 AUTO(폰트 기본) — 실측상 행간은 멀티라인 노드에만 붙으므로
+    //   행간 없는 프리셋에 값을 넣으면 단일라인 텍스트가 벌어진다(시각 회귀).
+    try { st.lineHeight = typeof lh === "number" ? { value: lh * 100, unit: "PERCENT" } : { unit: "AUTO" }; } catch (e) {}
+
+    // 2) 그 다음 바인딩. 실패는 bindField 가 전부 되돌린다 → 최악이어도 리터럴 스타일로 남는다
+    if (typeof st.setBoundVariable === "function") {
+      if (typeof fsz === "number") bindField(st, "fontSize", spec.fontSize, "FLOAT", st.fontSize, null, null, "style:fontSize");
+      if (typeof ls === "number") {
+        bindField(st, "letterSpacing", spec.letterSpacing, "FLOAT", lsKey(st), lsKey,
+                  (n) => { n.letterSpacing = { value: ls, unit: "PIXELS" }; }, "style:letterSpacing");
+      }
+      if (typeof lh === "number") {
+        // 노드에서는 불가능했던 바인딩. 되면 이득, 안 되면 PERCENT 리터럴이 그대로 남는다 — 어느 쪽이든 손해가 없다
+        bindField(st, "lineHeight", spec.lineHeight, "FLOAT", lhKey(st), lhKey,
+                  (n) => { n.lineHeight = { value: lh * 100, unit: "PERCENT" }; }, "style:lineHeight");
+      }
+      // fontFamily 는 토큰 값과 실제 해석된 패밀리가 같을 때만 (미설치 폰트를 걸면 스타일 전체가 missing font)
+      const rawFam = typeof spec.fontFamily === "string" && spec.fontFamily[0] === "$" ? VAR_STR[spec.fontFamily.slice(1)] : null;
+      if (rawFam != null && String(rawFam) === fnt.family) {
+        bindField(st, "fontFamily", spec.fontFamily, "STRING", fontKey(fnt), fontKeyOf,
+                  (n) => { n.fontName = fnt; }, "style:fontFamily");
+      } else if (rawFam != null) {
+        stat("style:fontFamily", "skip", "미설치 폴백: " + rawFam + " → " + fnt.family);
+      }
+      if (!/italic/i.test(fnt.style)) {
+        bindField(st, "fontWeight", spec.fontWeight, "FLOAT", fontKey(fnt), fontKeyOf,
+                  (n) => { n.fontName = fnt; }, "style:fontWeight");
+      }
+    }
+
+    TEXT_STYLES[name] = st;
+    STYLE_BY_AXES[axesKeyOfPreset(def)] = name;
+    made++;
+  }
+  DBG.push("Text Style " + made + "개 준비 (재사용 " + Object.keys(existing).length + " 중 매칭분 포함)"
+    + (Object.keys(TS_ALIASES).length ? " · 별칭 " + Object.keys(TS_ALIASES).length + "개는 스타일을 만들지 않음" : ""));
+}
+
+// 노드에 프리셋 스타일을 입힌다. 성공하면 개별 필드 바인딩은 생략한다(둘을 겹치면 스타일이 detach 된다).
+// manifest 에 documentAccess:"dynamic-page" 를 쓰지 않으므로 동기 setter 가 유효하다 — 아이콘 마스터가
+// mainComponent 동기 getter 에 의존하는 것과 같은 전제다.
+function applyTextStyle(t, spec) {
+  if (!OPT.bindTokens || CAP["style"] === false) return false;
+  const name = STYLE_BY_AXES[axesKeyOfSpec(spec)];
+  if (!name) return false;
+  const st = TEXT_STYLES[name];
+  if (!st) return false;
+  const before = { f: fontKeyOf(t), s: t.fontSize, l: lsKey(t), h: lhKey(t) };
+  try {
+    t.textStyleId = st.id;
+  } catch (e) { stat("textStyle", "error", (t.name || "?") + ": " + (e && e.message)); return false; }
+  // 리드백: 스타일이 실제로 붙었고, 붙인 결과가 리터럴과 같은가 (같아야 시각 회귀 0)
+  try {
+    const bad = t.textStyleId !== st.id
+      || fontKeyOf(t) !== before.f || t.fontSize !== before.s || lsKey(t) !== before.l || lhKey(t) !== before.h;
+    if (bad) {
+      try { t.textStyleId = ""; } catch (e2) {}
+      const s = stat("textStyle", "revert", (t.name || "?") + " → " + name);
+      if (s.revert >= 3 && s.ok === 0) { CAP["style"] = false; DBG.push("Text Style 적용 중단 — 되돌림 3회, 성공 0"); }
+      return false;
+    }
+  } catch (e) {
+    try { t.textStyleId = ""; } catch (e2) {}
+    stat("textStyle", "error", "리드백 실패: " + (e && e.message));
+    return false;
+  }
+  stat("textStyle", "ok");
+  return true;
+}
+
 // ---- 이미지 준비 ----
 function prepareImages(imagesObj) {
   for (const url in imagesObj) {
@@ -1468,6 +1653,7 @@ async function importDesign(data, icons, selected, pageMap, compPageMap, theme, 
   figma.ui.postMessage({ type: "progress", text: "폰트 로딩 중..." });
   await loadFonts([].concat(allComponents, screens));
   await probeCapabilities();   // 필드별 바인딩 지원 여부를 1회만 측정 (변수·폰트가 준비된 뒤)
+  await createTextStyles(data.typographyStyles);   // 타이포 프리셋 → Text Style (변수·폰트 준비 후)
   await probeIconSwap();       // 중첩 인스턴스 swapComponent 지원 여부 — 실패 시 아이콘 마스터를 아예 만들지 않는다
 
   // 0) 화면 페이지 준비 (이름→PageNode)

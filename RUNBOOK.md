@@ -67,7 +67,23 @@ pencil-kit/                  ← 이 키트 (스크립트·플러그인, 재사�
 7. **변수 — 항상 전체** (3~4KB 라 증분 불필요). `execute` 로 `Print(JSON.stringify(GetVariables()))`
    → **`{themes, variables}` 전체 그대로** `<DATA>/variables.json` 저장. 평탄화(`{이름:"#hex"}`) **금지** —
    테마별(light/dark) 값 + number/string 변수가 소실된다. (build 보다 먼저 — hex 역복원 맵의 기준)
-8. **검증 → 빌드**:
+8. **타이포 프리셋 배출** — `DS - Typography` 프레임 → 기계가독 프리셋:
+   ```bash
+   python3 make-typography-styles.py --data <DATA>     # → <DATA>/typography-styles.json
+   ```
+   (프레임 규약은 스크립트 헤더 주석)
+
+   같이 도는 **카탈로그 자기점검 2종** — 둘 다 배출물에는 영향이 없고 사람이 보는 카탈로그만 어긋나는
+   종류라, 따로 잡아주지 않으면 조용히 갈라진다. 기본 실행에서는 **경고만** 하고,
+   `--check` 에서는 **실패(종료코드 1)** 로 올린다:
+   - **라이트·다크판 대조** — 배출은 `DS - Typography`(라이트)만 읽는다. 라이트에만 행을 추가해도
+     프로그램은 정상 동작하고 `DS - Typography (Dark)` 만 낡는다. 두 판의 행 목록·값이 같은지 본다.
+     (다크 프레임이 없는 프로젝트는 건너뜀)
+   - **설명글·실제값 대조** — 각 행의 둘째 줄(사람이 읽는 설명)에 적힌 토큰 이름·값이 첫 줄 견본의
+     실제 바인딩과 맞는지 본다. 견본만 고치고 설명글을 안 고치면 카탈로그가 틀린 말을 하게 된다.
+     설명글 형식은 `이름 · <토큰> <값> / <토큰> … — 자유 메모` 이고 `—` 뒤 메모는 검사하지 않는다.
+     글꼴 종류(`font-*`)는 관례상 생략 가능해서 "빠졌다" 검사에서만 제외한다.
+9. **검증 → 빌드**:
    ```bash
    python3 verify.py --data <DATA> && python3 diff.py --data <DATA>
    python3 build.py --data <DATA> <펜프로젝트폴더>   # <펜프로젝트폴더> = images/ 가 있는 .pen 폴더
@@ -100,7 +116,26 @@ UI 의 **"토큰 바인딩"** 체크박스를 끄면 색 변수만 만들고 나
 | `letterSpacing` | `letterSpacing` | FLOAT | Pencil·Figma 모두 px |
 | `cornerRadius` | `cornerRadius` / per-side | FLOAT | |
 | `gap` `padding` `strokeWidth` | `itemSpacing` / `padding*` / `strokeWeight`(+면별) | FLOAT | 치수 토큰화 완료로 실작동 (`spacing-*`/`border-*`) |
-| `lineHeight` | — | — | **바인딩 불가**(아래) |
+| `lineHeight` | — | — | **노드 바인딩 불가**(아래). 대신 **Text Style 에 PERCENT 리터럴**로 보존 |
+
+**타이포 프리셋 → Text Style**
+
+Pencil·Figma 모두 변수 타입이 4종(bool/color/number/string)뿐이라 "프리셋"(크기·굵기·행간·자간 세트)을
+**변수로는 만들 수 없다**. Figma 에서 프리셋의 제자리는 **Text Style** 이고, `TextStyle` 은
+`setBoundVariable` 로 필드별 변수 바인딩도 받는다 → 프리셋과 토큰을 동시에 만족시키는 유일한 경로다.
+
+- 입력: `design-data.json` 의 `typographyStyles` (= `make-typography-styles.py` 산출물).
+  없으면 이 단계를 통째로 건너뛰고 종전대로 노드별 개별 바인딩만 한다.
+- 스타일 이름은 `group/preset` (예: `body/body-emphasis`) — Figma 패널에서 폴더로 묶인다. **이름으로 재사용**하므로 재임포트해도 늘어나지 않는다.
+- **별칭(`aliases`)은 스타일을 만들지 않는다** — 값이 같아 스타일 개수만 늘어난다. 코드 생성 층(iOS 등)에서만 쓴다.
+- 노드가 5축(`fontFamily`·`fontSize`·`fontWeight`·`letterSpacing`·`lineHeight`)까지 프리셋과 같으면
+  스타일을 붙이고 **개별 바인딩은 생략**한다 — 스타일이 붙은 노드에 같은 필드를 또 바인딩하면 Figma 가 스타일을 detach 시킨다.
+- 행간 없는 프리셋은 스타일에 `AUTO` 를 넣는다. 값을 넣으면 단일라인 텍스트가 벌어진다
+  (실측: 이 디자인의 행간은 `textGrowth: fixed-width` 노드에만 붙는다).
+- `TextStyle` 의 `lineHeight` 변수 바인딩 가능 여부는 **공식 문서에 없다** → 실행 시 프로브가 판정한다
+  (로그 `Text Style 프로브:`). 안 되면 바인딩을 막고 PERCENT 리터럴만 남긴다 — 어느 쪽이든 배수는 보존된다.
+- 전제: `manifest.json` 에 `documentAccess:"dynamic-page"` 미사용 → 동기 `node.textStyleId` setter 가 유효하다
+  (아이콘 마스터가 `mainComponent` 동기 getter 에 기대는 것과 같은 전제).
 
 **Figma Plugin API 제약 (Figma 데스크톱 실측 — 2026-07)**
 - `lineHeight` 에 number 변수를 걸면 **단위가 PIXELS 로 강제**된다. 프로브 실측: `{"unit":"PIXELS","value":1.5}` — Pencil 의 `lineHeight` 는 배수(1.5)라 그대로 **1.5px** 이 된다. 우회 방법이 없어 **영구 제외**: 변수는 만들되 `description` 으로 오용을 막고 렌더는 `PERCENT` 리터럴로 한다.

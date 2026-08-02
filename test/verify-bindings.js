@@ -44,7 +44,9 @@ function loadCode(figma) {
 
 // ---- 트리 직렬화 (boundVariables·id·parent 제외 = "눈에 보이는 것"만) ----
 // _main 은 마스터 컴포넌트 객체 참조라 직렬화하면 재귀 폭발 — 아이콘 정체는 _icon 으로 이미 실려 있다
-const SKIP_KEYS = { parent: 1, boundVariables: 1, id: 1, children: 1, _main: 1, _plugin: 1 };
+// textStyleId 는 boundVariables 와 같은 부류 — 어떤 스타일을 참조하는지일 뿐 렌더링되는 값이 아니다.
+// 스타일이 실제로 값을 바꿨다면 fontName/fontSize/letterSpacing/lineHeight 비교에서 잡힌다.
+const SKIP_KEYS = { parent: 1, boundVariables: 1, textStyleId: 1, id: 1, children: 1, _main: 1, _plugin: 1 };
 function norm(v) {
   if (typeof v === "number") return Number.isFinite(v) ? Math.round(v * 1e6) / 1e6 : String(v);
   if (v === null || typeof v !== "object") return v;
@@ -118,7 +120,7 @@ function synthIcons(designData) {
 // extra: {icons(합성 SVG 맵 오버라이드), swap(스텁 스왑 모델), pluginData, iconSwap(false=아이콘 인스턴스화 끔)}
 async function runImport(designData, behavior, fonts, bindTokens, seed, extra) {
   extra = extra || {};
-  const stub = createFigmaStub({ behavior: behavior, fonts: fonts, seed: seed, swap: extra.swap, outline: extra.outline, pluginData: extra.pluginData });
+  const stub = createFigmaStub({ behavior: behavior, fonts: fonts, seed: seed, swap: extra.swap, outline: extra.outline, pluginData: extra.pluginData, textStyle: extra.textStyle });
   const api = loadCode(stub.figma);
   const icons = extra.icons !== undefined ? extra.icons : synthIcons(designData);
   const opts = { bindTokens: bindTokens };
@@ -329,16 +331,20 @@ function section(t) { console.log("\n" + t); }
   // ---------- V2~V4 쌍둥이 차분 + 프로필별 동작 ----------
   if (designData) {
     const PROFILES = [
-      { name: "honest         (모든 필드 존중)", behavior: "honest", fonts: FULL_FONTS },
+      // pure = 아무것도 적대적이지 않은 기준선. 커버리지 등식은 여기서만 성립한다
+      { name: "honest         (모든 필드 존중)", behavior: "honest", fonts: FULL_FONTS, pure: true },
       { name: "weightNoop     (fontWeight 캔버스 무반응)", behavior: "weightNoop", fonts: FULL_FONTS },
       { name: "lineheightCoerce (lineHeight 단위 강제)", behavior: "lineheightCoerce", fonts: FULL_FONTS },
       { name: "outfitMissing  (Outfit 미설치 + 바인딩 throw)", behavior: "outfitMissing", fonts: INTER_ONLY },
       { name: "hostile        (33% 무작위 오염)", behavior: "hostile", fonts: FULL_FONTS },
+      // 프리셋 경로가 없는/깨진 환경에서도 현행(노드별 개별 바인딩)과 완전히 같아야 한다
+      { name: "tsUnsupported  (createTextStyle 예외)", behavior: "honest", fonts: FULL_FONTS, extra: { textStyle: "unsupported" } },
+      { name: "tsDetach       (스타일이 노드에 안 붙음)", behavior: "honest", fonts: FULL_FONTS, extra: { textStyle: "detach" } },
     ];
     for (const p of PROFILES) {
       section("V2 쌍둥이 차분 — " + p.name);
-      const off = await runImport(designData, p.behavior, p.fonts, false, 7);
-      const on = await runImport(designData, p.behavior, p.fonts, true, 7);
+      const off = await runImport(designData, p.behavior, p.fonts, false, 7, p.extra);
+      const on = await runImport(designData, p.behavior, p.fonts, true, 7, p.extra);
       const d = diff(off.tree, on.tree, "", []);
       check("bindTokens false/true 트리 동일 (시각 회귀 0)", d.length === 0, d.join("\n"));
 
@@ -348,7 +354,7 @@ function section(t) { console.log("\n" + t); }
         f + "(ok " + bs[f].ok + " rv " + bs[f].revert + " er " + bs[f].error + " sk " + bs[f].skip + ")").join(" ");
       console.log("       " + (line || "(집계 없음)"));
 
-      if (p.behavior === "honest") {
+      if (p.pure) {
         const bindFields = Object.keys(bs).filter((f) => f.indexOf("ov.") !== 0);
         check("모든 바인딩 필드에서 되돌림·예외 0",
           bindFields.every((f) => bs[f].revert === 0 && bs[f].error === 0),
@@ -361,14 +367,23 @@ function section(t) { console.log("\n" + t); }
         const nCr = sum(countRefs(designData, "cornerRadius"));
         const nLh = sum(countRefs(designData, "lineHeight"));
         const nLs = sum(countRefs(designData, "letterSpacing"));
-        check("fontSize 전량 바인딩 " + tot("fontSize", "ok") + "/" + nFs, tot("fontSize", "ok") === nFs);
-        check("fontFamily 전량 바인딩 " + tot("fontFamily", "ok") + "/" + nFam, tot("fontFamily", "ok") === nFam);
-        check("fontWeight 시도 전량 처리 " + (tot("fontWeight", "ok") + tot("fontWeight", "skip")) + "/" + nFw
-          + " (건너뜀 " + tot("fontWeight", "skip") + " = 이탤릭)", tot("fontWeight", "ok") + tot("fontWeight", "skip") === nFw);
+        // 타이포 5축은 이제 두 경로로 갈린다: 프리셋에 맞으면 Text Style 이 통째로 소유하고(textStyle.ok),
+        // 아니면 종전처럼 노드에 개별 바인딩한다. 둘의 합이 전량이어야 한다 — 어느 노드도 누락되면 안 된다.
+        const nTs = tot("textStyle", "ok");
+        check("fontSize 전량 처리 = 스타일 " + nTs + " + 개별 " + tot("fontSize", "ok") + " / " + nFs,
+          nTs + tot("fontSize", "ok") === nFs);
+        check("fontFamily 전량 처리 = 스타일 " + nTs + " + 개별 " + tot("fontFamily", "ok") + " / " + nFam,
+          nTs + tot("fontFamily", "ok") === nFam);
+        check("fontWeight 전량 처리 = 스타일 " + nTs + " + 개별 " + (tot("fontWeight", "ok") + tot("fontWeight", "skip")) + " / " + nFw
+          + " (건너뜀 " + tot("fontWeight", "skip") + " = 이탤릭)",
+          nTs + tot("fontWeight", "ok") + tot("fontWeight", "skip") === nFw);
         check("cornerRadius 전량 바인딩 " + tot("cornerRadius", "ok") + "/" + nCr, tot("cornerRadius", "ok") === nCr);
-        check("letterSpacing 전량 바인딩 " + tot("letterSpacing", "ok") + "/" + nLs, tot("letterSpacing", "ok") === nLs);
-        check("lineHeight 은 시도조차 안 함 " + tot("lineHeight", "skip") + "/" + nLh + " (배수↔PIXELS)",
-          tot("lineHeight", "ok") === 0 && tot("lineHeight", "skip") === nLh);
+        // letterSpacing/lineHeight 은 "설정된 노드에만" 있어서 스타일이 가져간 몫을 따로 못 센다.
+        // 대신 두 경로 어디서도 되돌림·예외가 없어야 한다는 불변식으로 본다 (누락은 위 세 축이 잡는다).
+        check("letterSpacing 개별 " + tot("letterSpacing", "ok") + "/" + nLs + " · 되돌림·예외 0",
+          tot("letterSpacing", "revert") === 0 && tot("letterSpacing", "error") === 0);
+        check("lineHeight 은 노드에 시도조차 안 함 (배수↔PIXELS) — 참조 " + nLh + "곳은 Text Style 이 PERCENT 로 담는다",
+          tot("lineHeight", "ok") === 0 && tot("lineHeight", "revert") === 0 && tot("lineHeight", "error") === 0);
         // ov.* 는 "아직 적용 못 하는 오버라이드 키" 통계라 bindTokens 와 무관하게 늘 집계된다
         const offBind = Object.keys(off.state.BIND_STAT).filter((f) => f.indexOf("ov.") !== 0);
         check("bindTokens=false 실행은 바인딩 시도 0", offBind.length === 0, offBind.join(","));
@@ -379,16 +394,35 @@ function section(t) { console.log("\n" + t); }
       }
       if (p.behavior === "outfitMissing") {
         // Inter 만 설치된 환경. $font-system(=Inter) 만 바인딩되고 Outfit 계열은 전부 건너뛰어야 한다.
-        const famRefs = countRefs(designData, "fontFamily");
-        let expOk = 0, expSkip = 0;
-        for (const ref in famRefs) {
-          const val = String(tokenValue(designData.variables, ref.slice(1)));
-          if (val === "Inter") expOk += famRefs[ref]; else expSkip += famRefs[ref];
+        // 프리셋이 생긴 뒤로는 노드 경로와 스타일 경로 둘 다 같은 게이트를 통과해야 하므로 나눠서 본다.
+        const nTs2 = tot("textStyle", "ok");
+        const nFam2 = sum(countRefs(designData, "fontFamily"));
+        check("개별 경로는 프리셋이 안 가져간 몫만 처리 "
+          + (tot("fontFamily", "ok") + tot("fontFamily", "skip")) + "/" + (nFam2 - nTs2),
+          tot("fontFamily", "ok") + tot("fontFamily", "skip") === nFam2 - nTs2);
+        // 스타일 경로: 프리셋 중 패밀리가 Inter 로 해석되는 것만 바인딩돼야 한다
+        const styleDefs = (designData.typographyStyles || {}).styles || {};
+        let expStyleOk = 0;
+        for (const n in styleDefs) {
+          if (String(tokenValue(designData.variables, styleDefs[n].fontFamily)) === "Inter") expStyleOk++;
         }
-        check("설치된 폰트만 바인딩 " + tot("fontFamily", "ok") + "/" + expOk, tot("fontFamily", "ok") === expOk);
-        check("미설치(Outfit) 참조는 전부 건너뜀 " + tot("fontFamily", "skip") + "/" + expSkip, tot("fontFamily", "skip") === expSkip);
+        const sOk = bs["style:fontFamily"] ? bs["style:fontFamily"].ok : 0;
+        const sSkip = bs["style:fontFamily"] ? bs["style:fontFamily"].skip : 0;
+        check("스타일도 설치된 폰트만 바인딩 " + sOk + "/" + expStyleOk + " (건너뜀 " + sSkip + ")",
+          sOk === expStyleOk && sOk + sSkip === Object.keys(styleDefs).length);
         // 이 프로필의 스텁은 미설치 패밀리를 바인딩하면 throw 한다 → 예외 0 = 게이트가 시도 자체를 막았다는 증거
-        check("미설치 폰트 바인딩 시도 0 (예외 0 이 증거)", tot("fontFamily", "error") === 0);
+        check("미설치 폰트 바인딩 시도 0 (노드·스타일 모두 예외 0)",
+          tot("fontFamily", "error") === 0 && (!bs["style:fontFamily"] || bs["style:fontFamily"].error === 0));
+      }
+      if (p.extra && p.extra.textStyle) {
+        // 프리셋 경로가 없는/깨진 환경 = 프리셋 도입 전과 완전히 같아야 한다 (위 쌍둥이 차분이 이미 증명)
+        const nFs2 = sum(countRefs(designData, "fontSize"));
+        check("스타일이 붙은 노드 0 (" + p.extra.textStyle + ")", tot("textStyle", "ok") === 0);
+        check("전 타이포가 개별 바인딩으로 폴백 " + tot("fontSize", "ok") + "/" + nFs2, tot("fontSize", "ok") === nFs2);
+        if (p.extra.textStyle === "detach") {
+          check("되돌림 3회에 서킷 브레이커 차단 (되돌림 " + tot("textStyle", "revert") + ", 이후 시도 중단)",
+            tot("textStyle", "revert") === 3 && on.state.CAP["style"] === false);
+        }
       }
       if (p.behavior === "hostile") {
         const rv = Object.keys(bs).reduce((a, f) => a + bs[f].revert, 0);
@@ -396,6 +430,60 @@ function section(t) { console.log("\n" + t); }
         const blocked = Object.keys(on.state.CAP).filter((k) => on.state.CAP[k] === false);
         check("서킷 브레이커 작동 (" + (blocked.join(",") || "없음") + ")", blocked.length > 0);
       }
+    }
+
+    // ---------- V6 타이포 프리셋 → Text Style ----------
+    // 프리셋은 Pencil·Figma 어느 쪽에서도 "변수"로 표현할 수 없다(둘 다 타입 4종). Figma 에서의 제자리는
+    // Text Style 이고, 그래야 lineHeight 를 PERCENT 로 담아 배수(1.5)를 보존할 수 있다.
+    const TS = designData.typographyStyles;
+    if (!TS || !TS.styles) {
+      section("V6 타이포 프리셋 — typography-styles.json 없음, 건너뜀");
+    } else {
+      section("V6 타이포 프리셋 → Text Style");
+      const r = await runImport(designData, "honest", FULL_FONTS, true, 7);
+      const styles = r.stub.figma.getLocalTextStyles();
+      const names = styles.map((s) => s.name).sort();
+      const want = Object.keys(TS.styles).map((n) => (TS.styles[n].group ? TS.styles[n].group + "/" : "") + n).sort();
+
+      check("프리셋 수만큼 Text Style 생성 " + styles.length + "/" + want.length, styles.length === want.length);
+      check("스타일 이름 = group/preset (Figma 패널에서 폴더로 묶임)",
+        JSON.stringify(names) === JSON.stringify(want),
+        "\n  got:  " + names.join(" ") + "\n  want: " + want.join(" "));
+      const nAlias = Object.keys(TS.aliases || {}).length;
+      check("별칭 " + nAlias + "개는 스타일을 만들지 않음 (값이 같아 스타일만 늘어난다)", styles.length === want.length);
+
+      // ★ 이번 작업의 핵심 이득: 노드에서는 원리적으로 불가능했던 배수 행간이 스타일에 살아남는가
+      const byName = {};
+      for (const s of styles) byName[s.name] = s;
+      let lhOk = 0, lhBad = [];
+      for (const n in TS.styles) {
+        const def = TS.styles[n];
+        const s = byName[(def.group ? def.group + "/" : "") + n];
+        if (!s) continue;
+        if (def.lineHeight) {
+          const mult = Number(tokenValue(designData.variables, def.lineHeight));
+          if (s.lineHeight && s.lineHeight.unit === "PERCENT" && s.lineHeight.value === mult * 100) lhOk++;
+          else lhBad.push(n + "=" + JSON.stringify(s.lineHeight) + " (기대 PERCENT " + mult * 100 + ")");
+        } else if (!s.lineHeight || s.lineHeight.unit !== "AUTO") {
+          // 행간 없는 프리셋에 값이 들어가면 단일라인 텍스트가 벌어진다 → 시각 회귀
+          lhBad.push(n + "=" + JSON.stringify(s.lineHeight) + " (기대 AUTO)");
+        }
+      }
+      check("행간 프리셋 " + lhOk + "개가 PERCENT 배수로 보존 · 나머지는 AUTO", lhBad.length === 0, lhBad.join("\n  "));
+
+      const sb = r.state.BIND_STAT;
+      const sFields = Object.keys(sb).filter((f) => f.indexOf("style:") === 0);
+      check("스타일 필드 바인딩 되돌림·예외 0 (" + sFields.map((f) => f + " ok" + sb[f].ok + " sk" + sb[f].skip).join(" ") + ")",
+        sFields.every((f) => sb[f].revert === 0 && sb[f].error === 0),
+        sFields.filter((f) => sb[f].revert || sb[f].error).join(","));
+      check("프리셋 매칭 노드에 스타일 적용 (" + (sb.textStyle ? sb.textStyle.ok : 0) + "곳, 되돌림 " + (sb.textStyle ? sb.textStyle.revert : 0) + ")",
+        !!sb.textStyle && sb.textStyle.ok > 0 && sb.textStyle.revert === 0 && sb.textStyle.error === 0);
+
+      // 재임포트로 스타일이 불어나지 않아야 한다 (컬렉션 재사용과 같은 방침)
+      const api2 = loadCode(r.stub.figma);
+      await api2.importDesign(designData, synthIcons(designData), undefined, {}, {}, "light", "Pencil Tokens", { bindTokens: true });
+      check("재임포트에도 스타일 중복 없음 " + r.stub.figma.getLocalTextStyles().length + "/" + want.length,
+        r.stub.figma.getLocalTextStyles().length === want.length);
     }
 
     // ---------- V5 재실행 멱등성 ----------

@@ -30,6 +30,14 @@ def load(name):
     with open(os.path.join(DATA, name), encoding="utf-8") as f:
         return json.load(f)
 
+def load_opt(name, default=None):
+    """선택 입력 — 없으면 default. (아직 생성 전인 프로젝트도 빌드는 되게 한다)"""
+    path = os.path.join(DATA, name)
+    if not os.path.exists(path):
+        return default
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
 def walk(node, fn):
     fn(node)
     for c in node.get("children", []) or []:
@@ -184,6 +192,9 @@ def encode_image(url):
 def main():
     nodes = load("pen-nodes.json")
     variables = load("variables.json")
+    # 타이포 프리셋 — make-typography-styles.py 산출물. 플러그인이 Figma Text Style 로 만든다.
+    # 없으면 플러그인은 프리셋 없이 현행(노드별 개별 바인딩)으로 동작한다.
+    typo_styles = load_opt("typography-styles.json")
 
     # raw hex -> $변수 역복원 (light hex 기준, 충돌 없음 검증됨)
     cmap = build_color_map(variables)
@@ -197,6 +208,8 @@ def main():
     icon_names, image_urls = collect(nodes)
     print(f"이미지 기준 폴더: {IMAGES_DIR}")
     print(f"컴포넌트 {len(components)}개, 화면 {len(screens)}개")
+    print(f"타이포 프리셋 {len(typo_styles['styles'])}개" if typo_styles
+          else "타이포 프리셋 없음 (make-typography-styles.py 미실행 — Text Style 생략)")
     print(f"아이콘 {len(icon_names)}종, 이미지 {len(image_urls)}개")
 
     images = {}
@@ -208,6 +221,7 @@ def main():
 
     out = {
         "variables": variables,
+        "typographyStyles": typo_styles,   # None 이면 플러그인이 Text Style 단계를 통째로 건너뜀
         "components": components,
         "screens": screens,
         "icons": icon_names,   # UI 에서 lucide CDN 으로 받아옴

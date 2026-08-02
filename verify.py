@@ -35,6 +35,11 @@ SUPPORTED_ICON_LIBS = {"lucide", "feather", "phosphor",
 TYPO_STR_KEYS = ("fontFamily", "fontWeight")
 TYPO_NUM_KEYS = ("fontSize", "lineHeight", "letterSpacing")
 
+# 프리셋(typography-styles.json) 매칭 축. 이 5개가 프리셋의 신원이며 조합은 유일해야 한다
+# (make-typography-styles.py 가 중복을 거부한다). 행간은 프리셋을 가르는 축이다 —
+# 실측상 행간은 멀티라인 노드에만 붙어서, 같은 크기·굵기라도 `-multiline` 변형과 구분해야 한다.
+TYPO_AXES = ("fontFamily", "fontSize", "fontWeight", "letterSpacing", "lineHeight")
+
 # 토큰 이름 버킷: iOS Scripts/gen-design-tokens.py 가 name.partition("-") 의 첫 조각으로 분류하고
 # 미등록 버킷은 ValueError. 예: font-size-body ❌ / fontsize-app-title ✅
 # (color 토큰은 자유 — 이 규칙은 number/string 토큰에만 적용)
@@ -90,6 +95,12 @@ def main():
     except FileNotFoundError:
         variables = {}
     var_types = {k: (d.get("type") if isinstance(d, dict) else "color") for k, d in variables.items()}
+    try:
+        typo_styles = load("typography-styles.json").get("styles", {})
+    except FileNotFoundError:
+        typo_styles = {}          # 미생성 프로젝트 — 프리셋 검사만 건너뛴다
+    # 5축 조합 -> 프리셋 이름. 노드는 "$토큰", 프리셋은 "토큰" 이라 노드 쪽에서 $ 를 떼고 맞춘다.
+    preset_by_axes = {tuple(s.get(a) for a in TYPO_AXES): name for name, s in typo_styles.items()}
 
     comp_ids = {n["id"] for n in nodes if isinstance(n, dict) and n.get("reusable")}
     comps = sum(1 for n in nodes if isinstance(n, dict) and n.get("reusable"))
@@ -205,10 +216,29 @@ def main():
             if isinstance(e, dict):
                 hit(e.get("color"))
 
+    # 프리셋 커버리지 — 오버라이드는 부분정보(굵기만 등)라 5축 신원을 만들 수 없어 제외한다
+    preset_hit, preset_off = {}, {}
+    cur_top = [""]
+    def tally_preset(n):
+        if not preset_by_axes:
+            return
+        key = tuple(v[1:] if isinstance(v, str) and v.startswith("$") else v
+                    for v in (n.get(a) for a in TYPO_AXES))
+        name = preset_by_axes.get(key)
+        if name:
+            preset_hit[name] = preset_hit.get(name, 0) + 1
+        else:
+            label = " / ".join(str(x) for x in key if x is not None)
+            e = preset_off.setdefault(label, [0, []])
+            e[0] += 1
+            if len(e[1]) < 3:
+                e[1].append(f"{cur_top[0]} > {n.get('name') or n.get('id')}")
+
     def typo_check(n):
         if n.get("type") == "text":
             text_total[0] += 1
             tally_typo(n, is_override=False)
+            tally_preset(n)
         elif "type" not in n and any(k in n for k in TYPO_STR_KEYS + TYPO_NUM_KEYS):
             tally_typo(n, is_override=True)   # descendants 오버라이드 객체 (type 없음 = 속성 오버라이드)
         tally_dims(n)                          # 치수는 노드 종류 무관 (frame·rect·오버라이드 전부)
@@ -217,6 +247,7 @@ def main():
     for n in nodes:
         if isinstance(n, dict) and typo_scope(n):
             scope_n += 1
+            cur_top[0] = str(n.get("name") or n.get("id"))
             walk(n, typo_check)
 
     trunc = json.dumps(nodes, ensure_ascii=False).count('"..."')
@@ -272,6 +303,27 @@ def main():
             print("     리터럴 fontSize 분포: " + " ".join(f"{k}:{v}" for k, v in sorted(size_dist.items(), key=lambda x: -x[1])) + f" ({len(size_dist)}종)")
         if weight_dist:
             print("     리터럴 fontWeight 분포: " + " ".join(f"{k}:{v}" for k, v in sorted(weight_dist.items(), key=lambda x: -x[1])))
+    # 프리셋 커버리지 — 낱개 토큰이 다 붙어도 "프리셋 밖 조합"이면 소비 측(Figma Text Style / iOS enum)이
+    # 프리셋으로 못 바꾼다. 이탈이 보이면 디자인을 프리셋으로 수렴시키거나 그 조합을 프리셋으로 승격한다.
+    if not typo_styles:
+        warn(False, "타이포 프리셋 미생성 — typography-styles.json 없음 "
+                    "(python3 make-typography-styles.py --data <DATA>)")
+    else:
+        off_n = sum(v[0] for v in preset_off.values())
+        hit_n = sum(preset_hit.values())
+        if off_n == 0:
+            line(True, f"프리셋 커버리지: 텍스트 {hit_n}곳 전부 {len(typo_styles)}개 프리셋에 매칭")
+        else:
+            warn(False, f"프리셋 밖 조합 {off_n}곳 / 텍스트 {hit_n + off_n} ({len(preset_off)}종)"
+                        " — 디자인을 프리셋으로 수렴시키거나 그 조합을 프리셋으로 승격",
+                 strict=STRICT_TYPO)
+            for label, (cnt, samples) in sorted(preset_off.items(), key=lambda x: -x[1][0]):
+                print(f"     ×{cnt} {label}")
+                for s in samples:
+                    print(f"        {s}")
+        unused = sorted(set(typo_styles) - set(preset_hit))
+        warn(not unused, f"미사용 프리셋 {len(unused)}개: {' '.join(unused)} — 쓰이지 않는 프리셋은 지우거나 적용처를 확인")
+
     # 인스턴스별 정당한 예외일 수 있으므로 --strict-typo 게이트에 넣지 않는다.
     # Figma 플러그인은 이제 이걸 적용한다(리터럴+바인딩). 단 오버라이드는 부분정보라
     # (원래 패밀리 × 새 굵기) 조합이 프리로드돼 있어야 폰트가 바뀐다 — 안 되면 플러그인이 현행 유지 + 집계.
