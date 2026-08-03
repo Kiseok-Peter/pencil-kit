@@ -30,7 +30,7 @@ function resetState() {
   DBG = []; ROOT_FILL_OVR = 0;
   LOADED = new Set(); FONT_RESOLVED = {};
   BIND_STAT = {}; CAP = {};
-  TEXT_STYLES = {}; STYLE_BY_AXES = {}; TS_ALIASES = {};
+  TEXT_STYLES = {}; STYLE_BY_AXES = {}; TS_ALIASES = {}; TS_QUEUE = [];
   ICON_COMP = {}; ICON_COMP_IDS = new Set(); ICON_SLOTS = {};
 }
 
@@ -705,7 +705,13 @@ function bindTypography(t, spec, fnt) {
   if (!OPT.bindTokens) return;
   // 프리셋(Text Style)이 5축을 통째로 소유하면 개별 바인딩은 하지 않는다 —
   // 스타일이 붙은 노드에 같은 필드를 또 바인딩하면 Figma 가 스타일을 detach 시킨다.
-  if (applyTextStyle(t, spec)) return;
+  // 실제 적용은 빌드가 다 끝난 뒤 비동기로 한다(setTextStyleIdAsync). 여기선 줄만 세운다.
+  if (queueTextStyle(t, spec, fnt)) return;
+  bindTypographyFields(t, spec, fnt);
+}
+
+// 노드별 개별 바인딩(프리셋 없이 쓰던 종전 경로). 스타일 적용이 실패한 노드를 되돌릴 때도 쓴다.
+function bindTypographyFields(t, spec, fnt) {
   if (typeof resolveNum(spec.fontSize) === "number")
     bindField(t, "fontSize", spec.fontSize, "FLOAT", t.fontSize);
   const lsv = resolveNum(spec.letterSpacing);
@@ -1394,6 +1400,7 @@ async function probeCapabilities() {
 let TEXT_STYLES = {};      // 프리셋 이름 -> TextStyle
 let STYLE_BY_AXES = {};    // 5축 키 -> 프리셋 이름
 let TS_ALIASES = {};       // 별칭 -> 프리셋 (Figma 스타일은 만들지 않는다 — 값이 같아 스타일만 늘어난다)
+let TS_QUEUE = [];         // 빌드 중 모아 둔 적용 대상 {node, spec, fnt, name} — 빌드 후 비동기로 처리
 
 // 5축 신원. 노드는 "$토큰", 프리셋 정의는 "토큰" 이라 노드 쪽 $ 를 떼고 맞춘다
 // (make-typography-styles.py / verify.py TYPO_AXES 와 같은 계약 — 조합은 유일함이 보장돼 있다)
@@ -1422,13 +1429,30 @@ function specOfPreset(def) {
 // 스타일에서만 가능한 것과 불가능한 것을 임시 스타일 1개로 한 번만 측정한다 (probeCapabilities 와 같은 철학).
 // 특히 lineHeight: 노드에서는 바인딩이 PIXELS 로 강제돼 배수가 깨지지만, 스타일에서도 그런지는
 // 공식 문서에 없다 → 실측해서 되면 걸고, 안 되면 CAP 으로 막아 프로덕션에서 되돌림이 안 나게 한다.
-function probeTextStyle() {
+async function probeTextStyle() {
   const note = [];
-  let st = null;
+  let st = null, probeText = null;
   try {
     st = figma.createTextStyle();
     st.name = "__pencil_probe__";
     st.fontName = ANY_FONT;
+    // 적용 프로브 — 실제로 노드에 붙는지 한 번만 본다. 안 되면 700번 헛시도 대신 즉시 포기한다.
+    // (동기 setter 는 실측상 반영되지 않았다 → setTextStyleIdAsync 가 있으면 그쪽을 쓴다)
+    try {
+      probeText = figma.createText();
+      probeText.fontName = ANY_FONT;
+      probeText.characters = "Ag";
+      st.fontSize = probeText.fontSize;
+      st.letterSpacing = probeText.letterSpacing;
+      st.lineHeight = probeText.lineHeight;
+      if (typeof probeText.setTextStyleIdAsync === "function") await probeText.setTextStyleIdAsync(st.id);
+      else probeText.textStyleId = st.id;
+      if (probeText.textStyleId !== st.id) {
+        CAP["style"] = false;
+        note.push("적용=안 붙음(" + JSON.stringify(probeText.textStyleId) + ") → 노드별 개별 바인딩으로 진행");
+      } else note.push("적용=가능" + (typeof probeText.setTextStyleIdAsync === "function" ? "(async)" : "(sync)"));
+    } catch (e) { CAP["style"] = false; note.push("적용=예외(" + (e && e.message) + ")"); }
+
     const lh = probeVar(LINEHEIGHT_RE, "FLOAT");
     if (lh && typeof st.setBoundVariable === "function") {
       st.lineHeight = { value: 150, unit: "PERCENT" };
@@ -1445,16 +1469,21 @@ function probeTextStyle() {
   } catch (e) {
     CAP["style"] = false;
     DBG.push("Text Style 프로브 실패 — 프리셋 없이 진행: " + (e && e.message));
-    if (st) { try { st.remove(); } catch (e2) {} }
+    cleanupProbe(st, probeText);
     return false;
   }
-  if (st) { try { st.remove(); } catch (e) {} }
+  cleanupProbe(st, probeText);
   if (note.length) DBG.push("Text Style 프로브: " + note.join(" · "));
   return true;
 }
 
+function cleanupProbe(st, txt) {
+  if (txt) { try { txt.remove(); } catch (e) {} }
+  if (st) { try { st.remove(); } catch (e) {} }
+}
+
 async function createTextStyles(tsData) {
-  TEXT_STYLES = {}; STYLE_BY_AXES = {}; TS_ALIASES = {};
+  TEXT_STYLES = {}; STYLE_BY_AXES = {}; TS_ALIASES = {}; TS_QUEUE = [];
   if (!OPT.bindTokens || !tsData || !tsData.styles) return;
   TS_ALIASES = tsData.aliases || {};
 
@@ -1470,7 +1499,7 @@ async function createTextStyles(tsData) {
     CAP["style"] = false;
     return;
   }
-  if (!probeTextStyle()) return;   // 생성 자체가 안 되면 CAP.style=false 로 두고 전체를 건너뛴다
+  if (!(await probeTextStyle())) return;   // 생성·적용이 안 되면 CAP.style=false 로 두고 전체를 건너뛴다
 
   let made = 0;
   for (const name in tsData.styles) {
@@ -1529,36 +1558,62 @@ async function createTextStyles(tsData) {
     + (Object.keys(TS_ALIASES).length ? " · 별칭 " + Object.keys(TS_ALIASES).length + "개는 스타일을 만들지 않음" : ""));
 }
 
-// 노드에 프리셋 스타일을 입힌다. 성공하면 개별 필드 바인딩은 생략한다(둘을 겹치면 스타일이 detach 된다).
-// manifest 에 documentAccess:"dynamic-page" 를 쓰지 않으므로 동기 setter 가 유효하다 — 아이콘 마스터가
-// mainComponent 동기 getter 에 의존하는 것과 같은 전제다.
-function applyTextStyle(t, spec) {
+// 스타일 적용은 **빌드가 다 끝난 뒤** 비동기로 한다. buildText 는 동기라 여기선 줄만 세운다.
+// (실측: 동기 setter `node.textStyleId = id` 는 실제 Figma 에서 반영되지 않아 전량 되돌림이 났다.
+//  Figma 가 스타일 적용을 setTextStyleIdAsync 로 옮겼기 때문으로 보인다.)
+function queueTextStyle(t, spec, fnt) {
   if (!OPT.bindTokens || CAP["style"] === false) return false;
   const name = STYLE_BY_AXES[axesKeyOfSpec(spec)];
-  if (!name) return false;
-  const st = TEXT_STYLES[name];
-  if (!st) return false;
-  const before = { f: fontKeyOf(t), s: t.fontSize, l: lsKey(t), h: lhKey(t) };
-  try {
-    t.textStyleId = st.id;
-  } catch (e) { stat("textStyle", "error", (t.name || "?") + ": " + (e && e.message)); return false; }
-  // 리드백: 스타일이 실제로 붙었고, 붙인 결과가 리터럴과 같은가 (같아야 시각 회귀 0)
-  try {
-    const bad = t.textStyleId !== st.id
-      || fontKeyOf(t) !== before.f || t.fontSize !== before.s || lsKey(t) !== before.l || lhKey(t) !== before.h;
-    if (bad) {
-      try { t.textStyleId = ""; } catch (e2) {}
-      const s = stat("textStyle", "revert", (t.name || "?") + " → " + name);
-      if (s.revert >= 3 && s.ok === 0) { CAP["style"] = false; DBG.push("Text Style 적용 중단 — 되돌림 3회, 성공 0"); }
-      return false;
-    }
-  } catch (e) {
-    try { t.textStyleId = ""; } catch (e2) {}
-    stat("textStyle", "error", "리드백 실패: " + (e && e.message));
-    return false;
-  }
-  stat("textStyle", "ok");
+  if (!name || !TEXT_STYLES[name]) return false;
+  TS_QUEUE.push({ node: t, spec: spec, fnt: fnt, name: name });
   return true;
+}
+
+// 스타일이 붙은 뒤에도 노드의 타이포 값이 그대로인가 = 시각 회귀 0 인가.
+// 어긋난 항목을 문자열로 돌려준다(진단용) — 없으면 null.
+function textStyleMismatch(t, st, before) {
+  const bad = [];
+  if (t.textStyleId !== st.id) bad.push("textStyleId " + JSON.stringify(t.textStyleId) + "≠" + JSON.stringify(st.id));
+  if (fontKeyOf(t) !== before.f) bad.push("font " + before.f + "→" + fontKeyOf(t));
+  if (t.fontSize !== before.s) bad.push("size " + before.s + "→" + t.fontSize);
+  if (lsKey(t) !== before.l) bad.push("ls " + before.l + "→" + lsKey(t));
+  if (lhKey(t) !== before.h) bad.push("lh " + before.h + "→" + lhKey(t));
+  return bad.length ? bad.join(" · ") : null;
+}
+
+// 줄 세워 둔 노드에 스타일을 입힌다. 실패한 노드는 **그 자리에서 개별 바인딩으로 되돌린다** —
+// 스타일이 안 붙어도 토큰이 유실되면 안 되기 때문(프리셋 도입 전과 완전히 같은 결과가 된다).
+async function applyQueuedTextStyles() {
+  if (!TS_QUEUE.length) return;
+  const useAsync = typeof figma.createText === "function"
+    && TS_QUEUE[0].node && typeof TS_QUEUE[0].node.setTextStyleIdAsync === "function";
+  let fellBack = 0;
+  for (const q of TS_QUEUE) {
+    const st = TEXT_STYLES[q.name];
+    if (!st || CAP["style"] === false) { bindTypographyFields(q.node, q.spec, q.fnt); fellBack++; continue; }
+    const before = { f: fontKeyOf(q.node), s: q.node.fontSize, l: lsKey(q.node), h: lhKey(q.node) };
+    let err = null;
+    try {
+      if (useAsync) await q.node.setTextStyleIdAsync(st.id);
+      else q.node.textStyleId = st.id;
+    } catch (e) { err = (e && e.message) || String(e); }
+    if (!err) {
+      try { err = textStyleMismatch(q.node, st, before); } catch (e) { err = "리드백 실패: " + (e && e.message); }
+    }
+    if (err) {
+      try { if (useAsync) await q.node.setTextStyleIdAsync(""); else q.node.textStyleId = ""; } catch (e) {}
+      const s = stat("textStyle", "revert", (q.node.name || "?") + " → " + q.name + ": " + err);
+      bindTypographyFields(q.node, q.spec, q.fnt);   // 토큰은 살린다
+      fellBack++;
+      if (s.revert >= 3 && s.ok === 0) {
+        CAP["style"] = false;
+        DBG.push("Text Style 적용 중단 — 되돌림 3회, 성공 0 (나머지는 노드별 개별 바인딩)");
+      }
+    } else stat("textStyle", "ok");
+  }
+  DBG.push("Text Style 적용: " + (BIND_STAT.textStyle ? BIND_STAT.textStyle.ok : 0) + "/" + TS_QUEUE.length
+    + (fellBack ? " · 개별 바인딩 폴백 " + fellBack : "") + (useAsync ? "" : " (동기 setter — setTextStyleIdAsync 없음)"));
+  TS_QUEUE = [];
 }
 
 // ---- 이미지 준비 ----
@@ -1709,6 +1764,11 @@ async function importDesign(data, icons, selected, pageMap, compPageMap, theme, 
     usedPages[pg.name] = 1;
     placed.push(frame);
   }
+
+  // 3) 프리셋 스타일 적용 — 트리가 다 만들어진 뒤에 한다.
+  //    buildText 가 동기라 빌드 중에는 async API(setTextStyleIdAsync)를 못 쓰기 때문.
+  if (TS_QUEUE.length) figma.ui.postMessage({ type: "progress", text: "타이포 프리셋 적용 중..." });
+  await applyQueuedTextStyles();
 
   // 포커스: 첫 화면 페이지로 전환 후 줌
   await switchToPage(firstScreenPage);

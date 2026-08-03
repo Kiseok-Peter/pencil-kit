@@ -340,6 +340,8 @@ function section(t) { console.log("\n" + t); }
       // 프리셋 경로가 없는/깨진 환경에서도 현행(노드별 개별 바인딩)과 완전히 같아야 한다
       { name: "tsUnsupported  (createTextStyle 예외)", behavior: "honest", fonts: FULL_FONTS, extra: { textStyle: "unsupported" } },
       { name: "tsDetach       (스타일이 노드에 안 붙음)", behavior: "honest", fonts: FULL_FONTS, extra: { textStyle: "detach" } },
+      // setTextStyleIdAsync 가 없던 옛 환경 — 동기 setter 폴백 분기가 실제로 붙는지 본다
+      { name: "tsNoAsync      (동기 setter 폴백)", behavior: "honest", fonts: FULL_FONTS, extra: { textStyle: "noAsync" } },
     ];
     for (const p of PROFILES) {
       section("V2 쌍둥이 차분 — " + p.name);
@@ -414,15 +416,19 @@ function section(t) { console.log("\n" + t); }
         check("미설치 폰트 바인딩 시도 0 (노드·스타일 모두 예외 0)",
           tot("fontFamily", "error") === 0 && (!bs["style:fontFamily"] || bs["style:fontFamily"].error === 0));
       }
-      if (p.extra && p.extra.textStyle) {
+      if (p.extra && p.extra.textStyle === "noAsync") {
+        // setTextStyleIdAsync 가 없으면 동기 setter 로 폴백해야 한다 — 그래도 스타일은 붙는다
+        check("동기 setter 폴백으로도 적용됨 (" + tot("textStyle", "ok") + "곳, 되돌림 " + tot("textStyle", "revert") + ")",
+          tot("textStyle", "ok") > 0 && tot("textStyle", "revert") === 0);
+      } else if (p.extra && p.extra.textStyle) {
         // 프리셋 경로가 없는/깨진 환경 = 프리셋 도입 전과 완전히 같아야 한다 (위 쌍둥이 차분이 이미 증명)
         const nFs2 = sum(countRefs(designData, "fontSize"));
         check("스타일이 붙은 노드 0 (" + p.extra.textStyle + ")", tot("textStyle", "ok") === 0);
         check("전 타이포가 개별 바인딩으로 폴백 " + tot("fontSize", "ok") + "/" + nFs2, tot("fontSize", "ok") === nFs2);
-        if (p.extra.textStyle === "detach") {
-          check("되돌림 3회에 서킷 브레이커 차단 (되돌림 " + tot("textStyle", "revert") + ", 이후 시도 중단)",
-            tot("textStyle", "revert") === 3 && on.state.CAP["style"] === false);
-        }
+        // 프로브가 임시 노드 1개로 미리 판정하므로 노드 700개를 헛시도하지 않는다
+        // (되돌림 0 이 정상 — 큐에 담기지도 않는다)
+        check("스타일 경로 선차단 (CAP.style=false, 되돌림 " + tot("textStyle", "revert") + ")",
+          on.state.CAP["style"] === false && tot("textStyle", "revert") === 0);
       }
       if (p.behavior === "hostile") {
         const rv = Object.keys(bs).reduce((a, f) => a + bs[f].revert, 0);

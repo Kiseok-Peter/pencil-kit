@@ -69,8 +69,10 @@ DesignSystem 모듈에 배치하고 멈춘다.
 **Claude 가 할 일:** `design-data.json` 의 `components`(reusable 52개) → 각각 재사용 SwiftUI `View`.
 - 인스턴스가 자주 바꾸는 값(텍스트/아이콘/상태) → View 파라미터
 - Step 1 토큰 + **Step 1-T 프리셋** + Step 2 아이콘 사용
-- 텍스트 노드의 **`preset` 필드를 그대로 쓴다** (`extract-for-swiftui.py` 가 주입). 필드가 없으면
-  프리셋 밖 조합이라는 뜻 → 낱개 토큰으로 폴백하고 사용자에게 보고한다
+- 텍스트 노드의 **`preset` 필드를 그대로 쓴다** (`extract-for-swiftui.py` 가 주입).
+  인스턴스 오버라이드도 주입된다 — 교체 subtree 는 그 안의 텍스트 노드에, 부분 오버라이드(굵기만 등)는
+  마스터 축과 합성해 오버라이드 객체 자체에 붙는다. **즉 필드가 없으면 진짜 프리셋 밖 조합**이다
+  → 낱개 토큰으로 폴백하고 사용자에게 보고한다 (상류에서 `verify.py --strict-typo` 로 잡혀야 할 건이다)
 DesignSystem 모듈에 배치하고 멈춘다.
 
 > 여기까지가 **공유 기반**. 이제 Feature 는 이걸 import 만 함.

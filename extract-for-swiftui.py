@@ -35,12 +35,18 @@ def preset_index(styles):
         idx[tuple(s.get(a) for a in TYPO_AXES)] = name
     return idx
 
-def inject_presets(node, idx, stat, counted=True):
+def _strip(v):
+    return v[1:] if isinstance(v, str) and v.startswith("$") else v
+
+def _axes_key(src, base=None):
+    """5축 키. base 를 주면 그 위에 src 를 덮어쓴다 (부분 오버라이드 합성)."""
+    return tuple(_strip(src.get(a, base.get(a) if base else None)) for a in TYPO_AXES)
+
+def inject_presets(node, idx, stat, comp_children=None, counted=True):
+    """comp_children: 컴포넌트 자식 id -> 노드. `ref` 의 부분 오버라이드를 마스터와 합성할 때 쓴다."""
     if isinstance(node, dict):
         if node.get("type") == "text":
-            key = tuple((v[1:] if isinstance(v, str) and v.startswith("$") else v)
-                        for v in (node.get(a) for a in TYPO_AXES))
-            name = idx.get(key)
+            name = idx.get(_axes_key(node))
             if name:
                 node["preset"] = name          # 미매칭은 키 자체를 안 넣는다 → 생성기가 낱개 토큰으로 폴백
             if counted:
@@ -50,11 +56,46 @@ def inject_presets(node, idx, stat, counted=True):
                 else:
                     stat["miss"].append(node.get("name") or node.get("id"))
         for c in node.get("children", []) or []:
-            inject_presets(c, idx, stat, counted)
-        # descendants 오버라이드는 부분정보(굵기만 등)라 5축 신원을 만들 수 없다 → 주입하지 않는다
+            inject_presets(c, idx, stat, comp_children, counted)
+
+        # descendants 두 종류를 모두 처리한다 (예전엔 통째로 건너뛰어 11곳이 비었다 — 피드백 3 §2-1)
+        for key, ov in (node.get("descendants") or {}).items():
+            if not isinstance(ov, dict):
+                continue
+            if "type" in ov:
+                # 교체(replacement) subtree = 온전한 노드 트리. 5축이 다 있어 그냥 주입하면 된다.
+                inject_presets(ov, idx, stat, comp_children, counted)
+            elif any(a in ov for a in TYPO_AXES):
+                # 부분 오버라이드(굵기만 등) = 그것만으로는 신원이 안 된다.
+                # `ref` 가 가리키는 컴포넌트에서 같은 id 의 원본을 찾아 축을 합성한다.
+                base = (comp_children or {}).get((node.get("ref"), key.split("/")[-1]))
+                if base is None:
+                    continue
+                nm = idx.get(_axes_key(ov, base))
+                if nm:
+                    ov["preset"] = nm
+                if counted:
+                    stat["ov_total"] += 1
+                    if nm:
+                        stat["ov_hit"] += 1
+                    else:
+                        stat["miss"].append(f"{node.get('name') or node.get('id')}/{key}(오버라이드)")
     elif isinstance(node, list):
         for x in node:
-            inject_presets(x, idx, stat, counted)
+            inject_presets(x, idx, stat, comp_children, counted)
+
+def component_children(components):
+    """(컴포넌트 id, 자식 id) -> 자식 노드. 부분 오버라이드의 원본 축을 찾는 색인."""
+    out = {}
+    def walk(cid, n):
+        if isinstance(n, dict):
+            if n.get("id"):
+                out[(cid, n["id"])] = n
+            for c in n.get("children", []) or []:
+                walk(cid, c)
+    for c in components:
+        walk(c.get("id"), c)
+    return out
 
 def collect_refs(node, out):
     if isinstance(node, dict):
@@ -97,13 +138,15 @@ def main():
     comps = needed_components(screens, d.get("components", []))
 
     ts = d.get("typographyStyles") or {}
-    stat = {"total": 0, "hit": 0, "miss": []}
+    stat = {"total": 0, "hit": 0, "ov_total": 0, "ov_hit": 0, "miss": []}
     if ts.get("styles"):
         idx = preset_index(ts["styles"])
+        cc = component_children(d.get("components", []))   # 부분 오버라이드 합성용 (전체 컴포넌트 기준)
         for c in comps:
-            inject_presets(c, idx, stat)
+            inject_presets(c, idx, stat, cc)
         for s in screens:
-            inject_presets(s, idx, stat, counted=not str(s.get("name") or "").startswith(DOC_PREFIX))
+            inject_presets(s, idx, stat, cc,
+                           counted=not str(s.get("name") or "").startswith(DOC_PREFIX))
 
     out = {
         "variables": d.get("variables", {}),     # 토큰(light/dark) → SwiftUI Color
@@ -121,6 +164,9 @@ def main():
         pct = 100 * stat["hit"] / stat["total"] if stat["total"] else 0
         print(f"  프리셋 {len(ts['styles'])}개 · 별칭 {len(ts.get('aliases', {}))}개 · "
               f"텍스트 {stat['hit']}/{stat['total']} 주입 ({pct:.0f}%, 카탈로그 '{DOC_PREFIX}*' 제외)")
+        if stat["ov_total"]:
+            print(f"  인스턴스 부분 오버라이드 {stat['ov_hit']}/{stat['ov_total']} 주입 "
+                  f"(마스터 축과 합성 — 굵기만 바꾸는 식이라 단독으론 신원이 안 된다)")
         if stat["miss"]:
             print(f"  ⚠️ 프리셋 밖 조합 {len(stat['miss'])}곳: {' '.join(stat['miss'][:6])}"
                   + (" …" if len(stat["miss"]) > 6 else "")

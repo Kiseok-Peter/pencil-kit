@@ -140,21 +140,28 @@ function createFigmaStub(opts) {
       // 스타일을 붙이면 Figma 는 스타일의 타이포 속성을 노드에 반영한다. 값이 같으면 시각 변화가 없고,
       // 다르면 노드가 스타일 값으로 바뀐다 → 플러그인의 리드백이 이 차이를 잡아내야 한다.
       let tsid = "";
+      const applyStyle = (v) => {
+        if (!v) { tsid = ""; return; }
+        const st = textStyles.find((s) => s.id === v);
+        if (!st) throw new Error("No text style with id " + v);
+        if (textStyleMode === "detach") { tsid = ""; return; }   // 붙였다고 보고되지 않는 환경
+        tsid = v;
+        n.fontName = clone(st.fontName);
+        n.fontSize = st.fontSize;
+        n.letterSpacing = clone(st.letterSpacing);
+        n.lineHeight = clone(st.lineHeight);
+      };
       Object.defineProperty(n, "textStyleId", {
         enumerable: true, configurable: true,
         get() { return tsid; },
-        set(v) {
-          if (!v) { tsid = ""; return; }
-          const st = textStyles.find((s) => s.id === v);
-          if (!st) throw new Error("No text style with id " + v);
-          if (textStyleMode === "detach") { tsid = ""; return; }   // 붙였다고 보고되지 않는 환경
-          tsid = v;
-          n.fontName = clone(st.fontName);
-          n.fontSize = st.fontSize;
-          n.letterSpacing = clone(st.letterSpacing);
-          n.lineHeight = clone(st.lineHeight);
-        },
+        // ★ 실측(Figma 데스크톱): 동기 setter 는 반영되지 않는다 — 전량 되돌림이 났다.
+        //   그래서 기본 모델을 "동기는 안 먹음"으로 둔다. 코드가 setTextStyleIdAsync 를 쓰는지
+        //   스텁이 강제로 확인하게 되고, 동기 setter 로 되돌아가면 테스트가 깨진다.
+        // noAsync = async API 가 없던 옛 환경 → 그때는 동기 setter 가 유일한 수단이었으므로 동작한다.
+        set(v) { if (!v) { tsid = ""; return; } if (textStyleMode === "syncWorks" || textStyleMode === "noAsync") applyStyle(v); },
       });
+      // 현행 API. 이게 없는 환경(textStyle:"noAsync")이면 코드가 동기 setter 로 폴백해야 한다.
+      if (textStyleMode !== "noAsync") n.setTextStyleIdAsync = async (v) => { applyStyle(v); };
     }
     if (type === "VECTOR") {
       n.constraints = { horizontal: "MIN", vertical: "MIN" };
