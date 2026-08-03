@@ -477,6 +477,24 @@ function section(t) { console.log("\n" + t); }
       }
       check("행간 프리셋 " + lhOk + "개가 PERCENT 배수로 보존 · 나머지는 AUTO", lhBad.length === 0, lhBad.join("\n  "));
 
+      // ★ 자간이 없는 프리셋은 스타일의 자간을 **건드리지 않아야** 한다.
+      //   0 을 PIXELS 로 넣으면 노드 기본값(PERCENT 0)과 단위가 달라져 스타일 적용이 전량 되돌려진다
+      //   (Figma 실측으로 겪은 회귀. 값은 같고 단위만 달라서 눈에는 안 보인다)
+      let lsOk = 0, lsBad = [];
+      for (const n in TS.styles) {
+        const def = TS.styles[n];
+        const s = byName[(def.group ? def.group + "/" : "") + n];
+        if (!s) continue;
+        if (def.letterSpacing) {
+          const pt = Number(tokenValue(designData.variables, def.letterSpacing));
+          if (s.letterSpacing && s.letterSpacing.unit === "PIXELS" && s.letterSpacing.value === pt) lsOk++;
+          else lsBad.push(n + "=" + JSON.stringify(s.letterSpacing) + " (기대 PIXELS " + pt + ")");
+        } else if (!s.letterSpacing || s.letterSpacing.unit !== "PERCENT" || s.letterSpacing.value !== 0) {
+          lsBad.push(n + "=" + JSON.stringify(s.letterSpacing) + " (자간 없는 프리셋 — 기본값을 건드리면 안 됨)");
+        }
+      }
+      check("자간 프리셋 " + lsOk + "개만 PIXELS 로 설정 · 나머지는 노드 기본값 그대로", lsBad.length === 0, lsBad.join("\n  "));
+
       const sb = r.state.BIND_STAT;
       const sFields = Object.keys(sb).filter((f) => f.indexOf("style:") === 0);
       check("스타일 필드 바인딩 되돌림·예외 0 (" + sFields.map((f) => f + " ok" + sb[f].ok + " sk" + sb[f].skip).join(" ") + ")",

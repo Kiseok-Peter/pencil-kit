@@ -1517,8 +1517,10 @@ async function createTextStyles(tsData) {
     try { st.fontName = fnt; } catch (e) { DBG.push("스타일 폰트 실패 " + styleName + ": " + (e && e.message)); }
     const fsz = resolveNum(spec.fontSize);
     if (typeof fsz === "number") { try { st.fontSize = fsz; } catch (e) {} }
+    // 자간 없는 프리셋은 **건드리지 않는다**. 0 을 PIXELS 로 넣으면 노드 기본값(PERCENT 0)과
+    // 단위가 달라져 리드백이 어긋난다 — 실측에서 이것 때문에 적용이 전량 되돌려졌다.
     const ls = resolveNum(spec.letterSpacing);
-    try { st.letterSpacing = typeof ls === "number" ? { value: ls, unit: "PIXELS" } : { value: 0, unit: "PIXELS" }; } catch (e) {}
+    if (typeof ls === "number") { try { st.letterSpacing = { value: ls, unit: "PIXELS" }; } catch (e) {} }
     const lh = resolveNum(spec.lineHeight);
     // ★ 배수 → PERCENT. 미지정은 AUTO(폰트 기본) — 실측상 행간은 멀티라인 노드에만 붙으므로
     //   행간 없는 프리셋에 값을 넣으면 단일라인 텍스트가 벌어진다(시각 회귀).
@@ -1571,13 +1573,22 @@ function queueTextStyle(t, spec, fnt) {
 
 // 스타일이 붙은 뒤에도 노드의 타이포 값이 그대로인가 = 시각 회귀 0 인가.
 // 어긋난 항목을 문자열로 돌려준다(진단용) — 없으면 null.
+// PERCENT 0 과 PIXELS 0 은 단위만 다르고 렌더가 같다 → 단위 차이로 회귀 판정하지 않는다.
+// (0 이 아닌 값은 단위가 다르면 실제로 다르게 보이므로 그대로 잡는다)
+function sameSpacing(a, b) {
+  if (a === b) return true;
+  const num = (k) => (k && k.indexOf(":") >= 0 ? Number(k.slice(k.indexOf(":") + 1)) : NaN);
+  const x = num(a), y = num(b);
+  return x === 0 && y === 0;
+}
+
 function textStyleMismatch(t, st, before) {
   const bad = [];
   if (t.textStyleId !== st.id) bad.push("textStyleId " + JSON.stringify(t.textStyleId) + "≠" + JSON.stringify(st.id));
   if (fontKeyOf(t) !== before.f) bad.push("font " + before.f + "→" + fontKeyOf(t));
   if (t.fontSize !== before.s) bad.push("size " + before.s + "→" + t.fontSize);
-  if (lsKey(t) !== before.l) bad.push("ls " + before.l + "→" + lsKey(t));
-  if (lhKey(t) !== before.h) bad.push("lh " + before.h + "→" + lhKey(t));
+  if (!sameSpacing(lsKey(t), before.l)) bad.push("ls " + before.l + "→" + lsKey(t));
+  if (!sameSpacing(lhKey(t), before.h)) bad.push("lh " + before.h + "→" + lhKey(t));
   return bad.length ? bad.join(" · ") : null;
 }
 

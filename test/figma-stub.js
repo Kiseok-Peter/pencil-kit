@@ -54,9 +54,10 @@ const DEFAULTS = {
   primaryAxisAlignItems: "MIN", counterAxisAlignItems: "MIN", clipsContent: true,
   layoutSizingHorizontal: "FIXED", layoutSizingVertical: "FIXED", layoutPositioning: "AUTO",
   characters: "", fontSize: 12, fontWeight: 400,
-  // 실제 Figma 의 새 TextNode 기본 행간은 AUTO(폰트 내장값)다. PERCENT 100 으로 두면
-  // "행간 없는 프리셋(AUTO) 을 붙였을 때 값이 바뀐다"는 가짜 회귀가 잡힌다.
-  letterSpacing: { value: 0, unit: "PIXELS" }, lineHeight: { unit: "AUTO" },
+  // 실제 Figma(실측): 새 TextNode 의 기본 자간은 **PERCENT 0**, 기본 행간은 AUTO 다.
+  // 자간을 PIXELS 로 두면 "자간 없는 프리셋을 붙였을 때 단위가 바뀐다"를 못 잡는다 —
+  // 실제로 이 차이 때문에 스타일 적용이 전량 되돌려졌는데 스텁은 통과시켰다.
+  letterSpacing: { value: 0, unit: "PERCENT" }, lineHeight: { unit: "AUTO" },
   textAlignHorizontal: "LEFT", textAlignVertical: "TOP", textAutoResize: "NONE",
   paragraphSpacing: 0, paragraphIndent: 0,
   arcData: { startingAngle: 0, endingAngle: 0, innerRadius: 0 }, pointCount: 3,
@@ -288,7 +289,7 @@ function createFigmaStub(opts) {
       const s = {
         type: "TEXT", id: nextId("S"), name: "", boundVariables: {},
         fontName: { family: "Inter", style: "Regular" }, fontSize: 16,
-        letterSpacing: { value: 0, unit: "PIXELS" }, lineHeight: { unit: "AUTO" },
+        letterSpacing: { value: 0, unit: "PERCENT" }, lineHeight: { unit: "AUTO" },   // 노드 기본과 같게
         remove() { const i = textStyles.indexOf(s); if (i >= 0) textStyles.splice(i, 1); },
       };
       s.setBoundVariable = (field, v) => {
