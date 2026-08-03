@@ -69,6 +69,7 @@ cd pencil-kit && python3 launcher.py
 | `extract-for-swiftui.py` | design-data → 경량 `swiftui-input.json`(화면 선택) | SwiftUI |
 | `make-icon-ids.py` | pen-nodes → 아이콘ID 맵 `_icon_ids.json` | SwiftUI |
 | `pad-icons.py` | 추출된 아이콘 PDF를 균일 정사각으로 정규화 | SwiftUI |
+| `make-icon-sheet.py` | 아이콘 PDF 폴더 → 검수 시트 `icons/_review.html` (그림 + 추출 원본 크기·잉크 위치, 어긋난 것 표시) | SwiftUI |
 | `SWIFTUI-GUIDE.md` | Pencil→SwiftUI 매핑 규칙 | SwiftUI |
 | `SWIFTUI-RUNBOOK.md` | SwiftUI 변환 단계별 런북 | SwiftUI |
 
@@ -84,8 +85,10 @@ python3 build.py --data ../초코로드/export ../초코로드
 python3 extract-for-swiftui.py --data ../초코로드/export "리뷰 작성"
 # 아이콘ID 맵
 python3 make-icon-ids.py --data ../초코로드/export
-# 아이콘 PDF 정사각 정규화 (Asset Catalog 폴더 대상)
-python3 pad-icons.py <아이콘PDF폴더>
+# 아이콘 PDF 정사각 정규화 (Asset Catalog 폴더 대상) — --canvas 는 대표 노드 크기
+python3 pad-icons.py <아이콘PDF폴더> --canvas 24
+# 아이콘 검수 시트 (경고 0 이어야 정상)
+python3 make-icon-sheet.py --data ../초코로드/export
 # 타이포 프리셋 배출 (DS - Typography 프레임 → 프리셋 JSON)
 #   --check = "전부 맞춰져 있나" 확인 모드: 프레임↔JSON 어긋남 + 카탈로그 자기점검을 전부 실패로 본다
 python3 make-typography-styles.py --data ../초코로드/export
@@ -134,7 +137,8 @@ node test/verify-bindings.js --data ../초코로드/export
 ## 알려진 한계
 - 아이콘은 lucide 기준 / 이미지는 기본 최대 600px 다운스케일(`MAX_DIM` 조정)
 - shader/mesh_gradient fill 미구현 / 폰트는 Figma에 해당 Google Font 필요(Outfit·Inter 기본 제공)
-- SwiftUI 아이콘은 Pencil PDF가 tight-crop 되므로 `pad-icons.py` 필수 (자세히는 SWIFTUI-GUIDE.md)
+- SwiftUI 아이콘은 Pencil PDF가 tight-crop 되므로 `pad-icons.py --canvas <노드크기>` 필수,
+  이어서 `make-icon-sheet.py` 로 경고 0 확인 (자세히는 SWIFTUI-GUIDE.md)
 
 ## 라이선스
 

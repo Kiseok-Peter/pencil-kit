@@ -59,10 +59,20 @@ DesignSystem 모듈에 배치하고 멈춘다.
 **트리거:** "SWIFTUI-RUNBOOK Step 2: 아이콘 PDF 뽑아서 Asset Catalog 에 넣어줘"
 **Claude 가 할 일:**
 1. `python3 make-icon-ids.py --data <프로젝트>/export` → `<export>/_icon_ids.json`
-2. 각 노드ID `export_nodes(format:"pdf")` → 아이콘 이름으로 rename (outputDir = DesignSystem Asset Catalog)
-3. **`python3 pad-icons.py <아이콘폴더>`** (tight-crop → 균일 정사각 정규화, 필수)
-4. Xcode 설정 안내: 'Preserve Vector Data' + 'Render As: Template Image'
+   (출력의 "기준: 크기 NxN" 을 봐둔다 — 3번 `--canvas` 에 그대로 쓴다)
+2. 각 노드ID `export_nodes(format:"pdf")` → 아이콘 이름으로 rename.
+   **아이콘당 1회 호출** (PDF 는 여러 nodeIds 를 1파일로 합침)
+3. **`python3 pad-icons.py <아이콘폴더> --canvas <대표노드크기>`** (tight-crop → 균일 정사각 정규화, 필수)
+   ⚠️ `--canvas` 를 빼면 폴더 최대 변 기준으로 캔버스가 잡혀 원본 노드 박스가 복원되지 않는다.
+4. **`python3 make-icon-sheet.py --data <프로젝트>/export`** → `<export>/icons/_review.html`
+   경고가 0 이어야 한다. 경고가 뜨면 그 아이콘은 대표 노드가 잘못 골라진 것이므로 1번부터 다시.
+5. Xcode 설정 안내: 'Preserve Vector Data' + 'Render As: Template Image'
 멈춘다. (Pencil 이 안 열려 있으면 여기서 알리고 대기)
+
+> **왜 4번이 필요한가** — 추출 원본 크기가 아이콘마다 다르면 `pad-icons.py` 가 공통 캔버스로
+> 넓히면서 **가운데 정렬**을 하고, 그러면 그림이 원래 자리에서 밀린다. 잉크가 한쪽으로 치우친
+> 아이콘일수록 크게 밀린다 — 초코로드 실측에서 `star-half` 가 5.5pt(24pt 중 23%) 밀려
+> `star` 위에 겹쳐 그리는 별점이 어긋났다. 그림만 봐서는 안 보여서 한 번 놓쳤다.
 
 ## Step 3 — DesignSystem: 컴포넌트 View
 **트리거:** "SWIFTUI-RUNBOOK Step 3: 컴포넌트들 재사용 View 로 만들어줘"

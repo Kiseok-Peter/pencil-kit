@@ -184,17 +184,27 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
    - **아이콘당 1회 호출** (여러 노드ID 를 한 번에 주면 멀티페이지 1파일로 합쳐짐)
    - outputDir 은 iOS 프로젝트의 Asset Catalog 위치로 바로 지정하면 좋음
 3. **⚠️ 패딩 정규화 (필수, 추출 직후 1회)**: `python3 pad-icons.py <아이콘PDF폴더> --canvas 24`
-   - **이유**: `export_nodes` 는 아이콘을 **보이는 패스에 tight crop** 한다 (노드 박스도, lucide 내장 패딩도 무시). 예: chevron 24×24 노드 → PDF 7×13. 종횡비가 제각각이라 그대로 `.frame()` 에 넣으면 아이콘마다 크기·왜곡이 들쭉날쭉.
+   - **이유**: `export_nodes` 는 **보이는 패스에 tight crop** 한다 (노드 박스도, lucide 내장 패딩도 무시).
+     1번이 규격 견본을 제대로 골랐으면 24 그리드에 사방 1pt 여백이 있어 **전량 22×22 로 균일하게** 나오지만,
+     대표 노드가 잘못 잡히면 아이콘마다 제각각이 된다 (초코로드 구본 실측: 13×7 ~ 22×22, 19종).
    - 이 스크립트가 각 PDF 의 MediaBox 만 **중앙 정사각**으로 넓혀 균일 캔버스로 만든다 (콘텐츠는 그대로 → 자동 중앙정렬, PDF 라이브러리 불필요).
    - **`--canvas <원본 노드 크기>` 를 반드시 준다** (1번에서 전량 24×24 로 확인됐으면 `--canvas 24`).
-     생략하면 캔버스 = 폴더 내 최대 변 + 여백이라 원본 박스보다 커지고, `--per-file` 은 **파일별** 상대 캔버스라
-     모든 아이콘이 `.frame()` 을 똑같이 꽉 채워 **chevron 이 x 만큼 커진다**(디자인의 크기 관계 소실).
+     생략하면 캔버스 = 폴더 내 최대 변 + 여백이라 원본 노드 박스가 복원되지 않고, `--per-file` 은 **파일별**
+     상대 캔버스라 모든 아이콘이 `.frame()` 을 똑같이 꽉 채워 **chevron 이 x 만큼 커진다**(크기 관계 소실).
    - MediaBox 를 덮어쓰므로 **추출 직후 1회만** 실행한다. 두 번 돌리면 경고 수치가 콘텐츠가 아닌 이전 캔버스를 가리킨다(중심은 보존됨).
-4. Xcode: Asset Catalog 에 PDF 추가 → 'Preserve Vector Data' + 'Render As: Template Image'
-5. 사용: `Image("heart").renderingMode(.template).resizable().scaledToFit().frame(width:24,height:24).foregroundColor(Color("text-primary"))`
+4. **검수 시트로 확인**: `python3 make-icon-sheet.py --data <프로젝트>/export` → `<export>/icons/_review.html`
+   - 아이콘마다 **추출 원본 크기와 잉크 위치**를 같이 찍고, 최빈값과 다른 것을 빨갛게 표시한다.
+   - **경고 0 이어야 정상.** 경고가 뜨면 그 아이콘은 1번의 대표 노드가 잘못 골라진 것이다.
+5. Xcode: Asset Catalog 에 PDF 추가 → 'Preserve Vector Data' + 'Render As: Template Image'
+6. 사용: `Image("heart").renderingMode(.template).resizable().scaledToFit().frame(width:24,height:24).foregroundColor(Color("text-primary"))`
 
 > PDF 로 통일하는 이유: SVG 는 복잡한 패스에서 렌더러별로 깨질 수 있으나, PDF 벡터는 Xcode 네이티브 지원으로 안정적.
-> tight-crop 주의: pad-icons.py 를 건너뛰면 `.frame()` 안에서 chevron 등 가는 아이콘이 거대해지거나 비율이 깨진다. 추출 후 반드시 1회 실행.
+>
+> **4번을 건너뛰면 안 되는 이유 (실측)** — 추출 원본이 제각각인 채로 3번을 돌리면 잉크가
+> **가운데로 재정렬**되면서 lucide 가 의도한 자리에서 밀린다. 크기·획 두께는 그대로라 그림만
+> 봐서는 안 보인다. 초코로드에서 70종 중 36종이 밀려 있었는데 35종은 0.5pt 이하라 눈에 안
+> 띄었고, `star-half` 만 **5.5pt(24pt 중 23%)** 밀려 `star` 위에 겹쳐 그리는 별점이 어긋났다.
+> 시트에 수치를 찍기 전까지 이걸 못 잡았다.
 
 ### (대안) SF Symbols 빠른 매핑
 
