@@ -403,13 +403,22 @@ function makeIconMaster(lib, name) {
 
 // SVG → 프레임 (기하만 — 이름·색·플러그인데이터는 호출자 몫).
 // 아이콘 마스터와 일반(폴백) 경로가 문자 그대로 같은 기하를 쓰도록 분리해 둔다.
+// 아이콘 크기는 토큰일 수 있다(`$iconsize-20`). 여기서 한 번 숫자로 풀어야
+// 마스터 키·리사이즈·슬롯 수집이 전부 같은 값을 본다. 안 풀면 typeof 검사에서 걸러져
+// **아이콘이 통째로 컴포넌트화에서 빠진다** — 크기 토큰화하며 실측으로 확인.
+function iconWH(spec) {
+  const w = resolveNum(spec.width), h = resolveNum(spec.height);
+  return (typeof w === "number" && typeof h === "number") ? { w: w, h: h } : null;
+}
+
 function makeIconFrame(spec) {
   const key = (spec.library || "lucide") + "/" + spec.icon;
   const svg = ICONS[key] || ICONS[spec.icon];
   if (!svg) return null;
   const node = figma.createNodeFromSvg(svg);
   // 라이브러리마다 viewBox 가 다름(lucide/feather=24, phosphor=256) → 현재 폭 기준 리스케일
-  const target = spec.width || spec.height || node.width || 24;
+  const rw = resolveNum(spec.width), rh = resolveNum(spec.height);
+  const target = (typeof rw === "number" && rw) || (typeof rh === "number" && rh) || node.width || 24;
   try { if (node.width) node.rescale(target / node.width); } catch (e) {}
   return node;
 }
@@ -419,14 +428,14 @@ function buildIcon(spec) {
   // 인스턴스 경로: 같은 (라이브러리, 아이콘, 크기) 마스터가 있으면 어디서든 인스턴스로 만든다.
   // 키가 Pencil id 와 무관해서 DS 카탈로그의 id 중복 사본도 안전하다.
   // 마스터가 없거나 스왑 미지원 환경이면 기존과 완전히 같은 프레임 경로.
-  if (CAP["ov.icon"] !== false && spec.icon
-      && typeof spec.width === "number" && typeof spec.height === "number") {
-    const comp = ICON_COMP[iconKey(spec.library || "lucide", spec.icon, spec.width, spec.height)];
+  const wh = iconWH(spec);
+  if (CAP["ov.icon"] !== false && spec.icon && wh) {
+    const comp = ICON_COMP[iconKey(spec.library || "lucide", spec.icon, wh.w, wh.h)];
     if (comp) { try { node = comp.createInstance(); } catch (e) { node = null; } }
     // 인스턴스에 rescale 은 걸지 않는다(자식 기하 변경 금지 가능성). 크기는 resize 로 —
     // 단일 마스터(24px, 외곽선화+SCALE constraints)는 resize 가 비례 스케일이 된다.
     if (node && CAP.iconOutline !== false) {
-      try { node.resize(Math.max(1, spec.width), Math.max(1, spec.height)); } catch (e) {}
+      try { node.resize(Math.max(1, wh.w), Math.max(1, wh.h)); } catch (e) {}
     }
   }
   if (!node) {
@@ -434,7 +443,7 @@ function buildIcon(spec) {
     if (!node) {
       DBG.push("아이콘 SVG 없음: " + (spec.library || "lucide") + "/" + spec.icon + " (CDN 미수신)");
       node = figma.createFrame();
-      node.resize(spec.width || 16, spec.height || 16);
+      node.resize((wh && wh.w) || 16, (wh && wh.h) || 16);
       node.fills = [];
     }
   }
@@ -452,8 +461,9 @@ function collectIconSlots(allComponents, allScreens) {
   ICON_SLOTS = {};
   const walkIcons = (n) => {
     if (!n || typeof n !== "object") return;
-    if (n.type === "icon" && n.icon && typeof n.width === "number" && typeof n.height === "number") {
-      ICON_SLOTS[n.id] = { icon: n.icon, library: n.library || "lucide", width: n.width, height: n.height, fill: n.fill, candidates: new Set() };
+    const wh = n.type === "icon" && n.icon ? iconWH(n) : null;
+    if (wh) {
+      ICON_SLOTS[n.id] = { icon: n.icon, library: n.library || "lucide", width: wh.w, height: wh.h, fill: n.fill, candidates: new Set() };
     }
     for (const c of n.children || []) walkIcons(c);
   };
@@ -488,8 +498,10 @@ async function buildIconComponents(allComponents, allScreens, offsets) {
   };
   const walk = (n) => {
     if (!n || typeof n !== "object") return;
-    if (n.type === "icon" && n.icon && typeof n.width === "number" && typeof n.height === "number")
-      add(n.library || "lucide", n.icon, n.width, n.height);
+    if (n.type === "icon" && n.icon) {
+      const wh = iconWH(n);
+      if (wh) add(n.library || "lucide", n.icon, wh.w, wh.h);
+    }
     for (const c of n.children || []) walk(c);
     const d = n.descendants;   // 교체 subtree 안의 아이콘도
     if (d) for (const k in d) if (d[k] && typeof d[k] === "object") walk(d[k]);
@@ -625,8 +637,11 @@ function swapIcon(node, slot, iconName) {
 
 // ---- 패스(SVG geometry) 빌드 ----
 function buildPath(spec) {
-  const vb = spec.viewBox || [0, 0, spec.width || 24, spec.height || 24];
-  const w = spec.width || vb[2], h = spec.height || vb[3];
+  // 아이콘과 같은 이유로 크기를 먼저 푼다 — 토큰이면 SVG 폭에 문자열이 들어간다.
+  const pw = resolveNum(spec.width), ph = resolveNum(spec.height);
+  const nw = typeof pw === "number" ? pw : null, nh = typeof ph === "number" ? ph : null;
+  const vb = spec.viewBox || [0, 0, nw || 24, nh || 24];
+  const w = nw || vb[2], h = nh || vb[3];
   let fillAttr = "none";
   if (spec.fill !== undefined) {
     const fc = typeof spec.fill === "string" ? spec.fill : (spec.fill && spec.fill.color);

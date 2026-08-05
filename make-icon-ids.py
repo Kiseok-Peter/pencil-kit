@@ -25,26 +25,42 @@ def _pop_data(argv):
 DATA, _ = _pop_data(sys.argv[1:])
 DATA = os.path.abspath(DATA)
 
-def collect(n, top, dark, out):
+def _num(v, var_nums):
+    """크기는 토큰일 수 있다(`$iconsize-20`). 점수 계산이 숫자 비교라 여기서 풀어 둔다 —
+    안 풀면 `abs(문자열 - 문자열)` 로 터지거나 크기 편차 경고가 통째로 무력해진다."""
+    if isinstance(v, str) and v.startswith("$"):
+        return var_nums.get(v[1:], v)
+    return v
+
+def collect(n, top, dark, out, var_nums):
     """모든 아이콘 노드를 후보로 모은다 (첫 등장만 쓰면 사용처 크기·색을 물려받는다)."""
     if isinstance(n, dict):
         if n.get("type") == "icon" and n.get("icon") and (n.get("library") or "lucide") == "lucide":
             out.append({
                 "icon": n["icon"], "id": n.get("id"), "top": top, "dark": dark,
-                "w": n.get("width"), "h": n.get("height"), "fill": n.get("fill"),
+                "w": _num(n.get("width"), var_nums), "h": _num(n.get("height"), var_nums),
+                "fill": n.get("fill"),
                 "doc": bool(top and top.startswith(DOC_PREFIX)),
             })
         for c in n.get("children", []) or []:
-            collect(c, top, dark, out)
+            collect(c, top, dark, out, var_nums)
         for ov in (n.get("descendants") or {}).values():
             if isinstance(ov, dict):
-                collect(ov, top, dark, out)
+                collect(ov, top, dark, out, var_nums)
     elif isinstance(n, list):
         for x in n:
-            collect(x, top, dark, out)
+            collect(x, top, dark, out, var_nums)
 
 def main():
     nodes = json.load(open(os.path.join(DATA, "pen-nodes.json"), encoding="utf-8"))
+    # 크기 토큰(`$iconsize-*`)을 풀기 위한 number 변수 표
+    vpath = os.path.join(DATA, "variables.json")
+    var_nums = {}
+    if os.path.exists(vpath):
+        vd = json.load(open(vpath, encoding="utf-8"))
+        for k, v in (vd.get("variables") or vd).items():
+            if isinstance(v, dict) and v.get("type") == "number" and not isinstance(v.get("value"), list):
+                var_nums[k] = v["value"]
     cands = []
     for t in nodes if isinstance(nodes, list) else [nodes]:
         if not isinstance(t, dict):
@@ -52,7 +68,7 @@ def main():
         # ⚠️ 라이트/다크 판을 구분한다. 같은 $text-primary 라도 다크판은 #F5F4F1(거의 흰색)로 렌더돼
         #    흰 배경에서 안 보이는 PDF 가 나온다. export_nodes 는 "보이는 대로" 뽑기 때문.
         dark = ((t.get("theme") or {}).get("mode") == "dark")
-        collect(t, t.get("name"), dark, cands)
+        collect(t, t.get("name"), dark, cands, var_nums)
     if not cands:
         print("아이콘 노드가 없습니다."); return
 

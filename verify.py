@@ -43,17 +43,28 @@ TYPO_AXES = ("fontFamily", "fontSize", "fontWeight", "letterSpacing", "lineHeigh
 # 토큰 이름 버킷: iOS Scripts/gen-design-tokens.py 가 name.partition("-") 의 첫 조각으로 분류하고
 # 미등록 버킷은 ValueError. 예: font-size-body ❌ / fontsize-app-title ✅
 # (color 토큰은 자유 — 이 규칙은 number/string 토큰에만 적용)
-TOKEN_BUCKETS = {"radius", "spacing", "fontsize", "fontweight", "lineheight", "tracking", "font", "border"}
+TOKEN_BUCKETS = {"radius", "spacing", "fontsize", "fontweight", "lineheight", "tracking", "font", "border",
+                 "iconsize", "controlheight"}
 
 # 치수(레이아웃) 토큰화 커버리지 — 타이포와 같은 범위(카탈로그 제외)에서 리터럴을 센다.
-# 화이트리스트: 0(토큰 불필요 — "없음"의 표현), padding 21(단발 광학치, 디자인 검토 후보로 문서화됨)
-DIM_WHITELIST_PAD = {0, 21}
+# 화이트리스트: 0 만 (토큰 불필요 — "없음"의 표현). padding 21 은 spacing-20 으로 통일해 뺐다.
+DIM_WHITELIST_PAD = {0}
+
+# 아이콘 크기 규격 — ⚠️ width/height 는 **변수 바인딩을 못 받는다**(실측: Pencil 이 조용히 무시).
+# 그래서 노드에는 숫자가 그대로 남고, `iconsize-*` 토큰은 "허용된 값 목록" 역할만 한다.
+# 소비 측(iOS DSIconSize 등)은 이 토큰으로 스케일을 생성하고, 여기서는 그 밖의 크기가
+# 새로 생기는 것을 막는다. 정사각만 검사한다 — 배터리 아이콘처럼 비정사각인 것도 있다.
+ICONSIZE_PREFIX = "iconsize-"
 
 # 색 토큰화 커버리지에서 예외로 두는 리터럴 — 완전 투명은 "색"이 아니라 "없음"의 표현이라 토큰이 없다.
 COLOR_WHITELIST = {"#00000000"}
 
 # 변수 참조 판별: $ 뒤 소문자 시작 kebab (텍스트 내용의 "$5" 같은 값 오인 방지)
 _VAR_RE = re.compile(r"^\$[a-z][a-z0-9-]*$")
+
+def _num(v):
+    """숫자 리터럴인가 (bool 은 int 의 하위형이라 명시적으로 제외)."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 # 타이포 커버리지 집계에서 제외할 최상위 프레임 접두 — 디자인시스템 카탈로그(쇼케이스)는
 # 코드 생성 대상이 아니고 문서 전용 크기(9px 아이콘 라벨 등)를 써서 스케일을 오염시킨다.
@@ -108,6 +119,9 @@ def main():
 
     orphan_refs, bad_icons, var_refs = set(), {}, set()
     node_icons, override_icons = set(), set()   # 아이콘 수집 커버리지 (build.py 와 같은 기준)
+    icon_sizes, icon_off, icon_nonsquare = {}, {}, {}   # 아이콘 크기 규격 검사
+    iconsize_vals = {v.get("value") for k, v in variables.items()
+                     if k.startswith(ICONSIZE_PREFIX) and isinstance(v, dict) and _num(v.get("value"))}
     typo_type_bad = []                      # (변수명, 실제타입, 기대타입)
     typo_lit = {k: 0 for k in TYPO_STR_KEYS + TYPO_NUM_KEYS}   # 리터럴 개수
     typo_set = {k: 0 for k in TYPO_STR_KEYS + TYPO_NUM_KEYS}   # 값이 있는 개수
@@ -155,6 +169,12 @@ def main():
                 bad_icons[lib] = bad_icons.get(lib, 0) + 1
             if n.get("icon"):
                 node_icons.add(n["icon"])
+            w, h = n.get("width"), n.get("height")
+            if _num(w) and w == h:
+                (icon_sizes if w in iconsize_vals else icon_off)[w] = \
+                    (icon_sizes if w in iconsize_vals else icon_off).get(w, 0) + 1
+            elif _num(w) and _num(h):
+                icon_nonsquare[(w, h)] = icon_nonsquare.get((w, h), 0) + 1
         elif "type" not in n and n.get("icon"):
             # descendants 오버라이드의 아이콘 교체 — icon 노드가 한 번도 안 쓴 아이콘이면
             # build.py 가 SVG 를 수집하는지가 중요하다 (예전엔 놓쳐서 15종이 다운로드되지 않았다)
@@ -167,8 +187,6 @@ def main():
     # 타이포 + 치수 집계 — 대상 범위만 (컴포넌트 + 제품 화면)
     dim_lit = {"gap": 0, "padding": 0, "cornerRadius": 0, "strokeWidth": 0}
     dim_dist = {k: {} for k in dim_lit}
-    def _num(v):
-        return isinstance(v, (int, float)) and not isinstance(v, bool)
     def tally_dims(n):
         def hit(key, v, white=()):
             if _num(v) and v not in white:
@@ -277,6 +295,19 @@ def main():
     line(not orphan_refs, f"ref 해소: 끊긴 참조 {len(orphan_refs)}개" + (f" {sorted(orphan_refs)}" if orphan_refs else ""))
     line(trunc == 0, f"절단 마커(...): {trunc}개" + (" — depth 부족, 해당 id 만 재추출 필요" if trunc else ""))
     line(not bad_icons, f"미지원 아이콘 라이브러리: {bad_icons}" if bad_icons else "아이콘 라이브러리: 전부 지원됨")
+    # 아이콘 크기 규격 — iconsize-* 토큰 값 밖의 정사각 크기를 잡는다.
+    # 바인딩이 불가능해 숫자가 그대로 남으므로, 이 검사가 유일한 방어선이다.
+    if iconsize_vals:
+        n_ok, n_off = sum(icon_sizes.values()), sum(icon_off.values())
+        warn(not icon_off,
+             f"iconsize 규격 밖 아이콘 {n_off}곳: "
+             + " ".join(f"{k:g}px×{v}" for k, v in sorted(icon_off.items()))
+             + f" — 허용 {sorted(int(v) for v in iconsize_vals)}",
+             strict=STRICT_DIMS)
+        if not icon_off:
+            extra = (f" · 비정사각 {sum(icon_nonsquare.values())}곳 "
+                     + " ".join(f"{int(a)}x{int(b)}" for a, b in sorted(icon_nonsquare))) if icon_nonsquare else ""
+            line(True, f"아이콘 크기: 정사각 {n_ok}곳 전부 iconsize-* 규격{extra}")
     ov_only = sorted(override_icons - node_icons)
     line(True, f"아이콘: icon 노드 {len(node_icons)}종 + 오버라이드 전용 {len(ov_only)}종 = 수집 대상 {len(node_icons | override_icons)}종"
          + (f" (오버라이드 전용: {' '.join(ov_only)})" if ov_only else ""))

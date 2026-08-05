@@ -59,6 +59,10 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 | `effect:{type:"blur"}` | `.blur(radius:)` |
 | `icon`(lucide) | **Pencil PDF 벡터** (5절) — Asset Catalog Template. SF Symbols 는 급할 때 대안 |
 | `ref` (인스턴스) | 해당 컴포넌트 View 호출, `descendants` → 파라미터/오버라이드 |
+| `descendants` | **배열이 아니라 `{자식id: 오버라이드}` 객체.** 값에 `type` 이 있으면 그 자리를 통째로 갈아끼우는 **교체 트리**, 없으면 **속성만 덮어쓰기** |
+| `slot: []` (프레임의 **속성** — 노드 타입 아님) | 인스턴스가 자식 트리를 갈아끼우면 `@ViewBuilder` 파라미터, 라벨만 바꾸면 구체 파라미터 |
+| `context: "platform-chrome"` | **코드 생성 대상 아님** — OS 가 그리는 영역(상태바·홈 인디케이터). 직접 그리면 실기기에서 두 벌로 겹친다 |
+| `context: "native-substitute:ios"` | iOS 만 시스템 컨트롤로 대체(`NavigationStack` 툴바·`TabView`). **다른 플랫폼은 디자인대로 그린다** |
 | `opacity` / `rotation` | `.opacity()` / `.rotationEffect()` |
 
 ## ⚠️ 고정 규칙 (이 프로젝트 — 반드시 지킬 것)
@@ -111,6 +115,10 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
   인스턴스 오버라이드도 마찬가지다 — `descendants` 의 교체 subtree 는 그 안 텍스트 노드에,
   부분 오버라이드(굵기만 바꾸는 식)는 마스터 축과 합성해 오버라이드 객체에 붙는다.
   **필드가 없으면 진짜 프리셋 밖 조합**이므로 낱개 폴백 후 상류에 알린다.
+- **`preset` 이 붙은 노드에는 낱개 5축이 아예 없다.** `extract-for-swiftui.py` 가 프리셋이 소유한
+  축(`fontFamily`·`fontSize`·`fontWeight`·`letterSpacing`·`lineHeight`)을 지우고 내보낸다.
+  값이 같은 순수 중복이었는데, `lineSpacing`·`tracking` 은 **더해지는 값**이라 프리셋을 적용한 뒤
+  낱개 축을 또 읽으면 조용히 벌어졌다(실측: 컴포넌트 6곳 + 화면 50곳).
 - **`aliases` 는 값을 갖지 않는다** — 가리키는 프리셋에 위임한다. 복제하면 두 벌이 갈라진다.
 - **미지정 축은 키가 없다** = "그 축을 건드리지 않는다". `lineHeight` 키가 없으면 `.lineSpacing` 을 붙이지 않는다.
 - **`multiline: true`** 는 여러 줄 전용(행간 포함). 단일라인에 쓰면 줄간격이 벌어진다 —
@@ -153,10 +161,20 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 | `spacing-` | number | **값 기반** (`spacing-<값>`) | `spacing-16: 16` | `gap`→stack `spacing:`, `padding`→`.padding()` |
 | `radius-` | number | t-shirt(구) + 값 기반(신) 혼재 | `radius-md: 12`, `radius-18: 18` | `.cornerRadius()` / `RoundedRectangle` |
 | `border-` | number | 시맨틱 | `border-thin: 1`, `border-thick: 2` | `.stroke(lineWidth:)` / `.border()` |
+| `iconsize-` | number | **값 기반** (11종: 12·14·16·18·20·22·24·28·36·44·48) | `iconsize-20: 20` | 아이콘 `.frame(width:height:)` |
+| `controlheight-` | number | **값 기반** (4종: 44·48·52·56) | `controlheight-52: 52` | 버튼·입력 등 컨트롤 높이 |
 
+> ⚠️ **`iconsize-*`·`controlheight-*` 는 노드에 바인딩되어 있지 않다.** Pencil 이 `width`/`height` 의
+> 변수 참조를 무시하기 때문에(스키마엔 있으나 구현이 안 따름 — `PENCIL-MCP-NOTES.md` 8번)
+> 노드에는 숫자가 그대로 남는다. **토큰은 "허용된 값 목록"** 이고, 규격 밖 크기가 새는 것은
+> `verify.py` 의 아이콘 크기 게이트가 막는다. 생성기는 이 정의로 스케일만 만들면 된다.
+>
+> **`controlheight-*` 대상이 아닌 것**: 원형 아바타(`radius-full`)·아이콘 감싸개·아이콘 서클.
+> 값이 48·44·56 으로 같아도 의미가 달라 공유하면 안 된다(실측: 아바타 2곳·감싸개 1곳·서클 2곳).
+>
 > `spacing-xs/sm/md/lg/xl` 5개는 **미사용 레거시**다(값 기반 신설 전 선언만 있었음) — 생성기에서 건너뛰거나
 > 값 기반과 함께 생성해도 무방하나, 화면 데이터는 값 기반만 참조한다.
-> `padding` 의 `0` 과 `21`(1곳, 광학 보정)은 의도적으로 리터럴 — 토큰 매핑에서 제외.
+> `padding` 의 `0` 만 의도적 리터럴 — 나머지는 전부 토큰(예전에 예외였던 탭바 `21` 은 `spacing-20` 으로 통일).
 > `strokeWidth` 는 면별 dict(`{top:"$border-thin"}`)로도 온다 — per-side `.overlay` 로 처리.
 
 ## 4) 컴포넌트 → 재사용 View

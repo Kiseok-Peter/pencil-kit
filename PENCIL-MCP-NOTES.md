@@ -67,7 +67,54 @@ Get("RCCfg/g9E1t")   // ✅                   (g9E1t = 교체본 안 실제 노�
 
 또 `c.depth===0` 필터로 컴포넌트를 찾으면 **하나도 안 잡힙니다**(최상위가 아니므로). `n.reusable` 로 찾으세요.
 
-## 8. 대량 수정은 `execute` 한 번에 — 롤백이 안전망
+## 8. `width`/`height` 는 **변수 바인딩을 못 받는다** — 스키마와 구현이 다르다
+
+스키마에는 `Size { width?: NumberOrVariable ... }` 로 적혀 있지만 **실제로는 무시된다.**
+오류도 경고도 없이 이전 값이 그대로 남는다:
+
+```js
+Update(id, {width: "$iconsize-48"})   // 16 이던 값이 그대로 16
+Update(id, {width: 36})               // 36 으로 바뀜 ✅
+Update(id, {width: "$iconsize-16"})   // 36 그대로 (다시 무시)
+```
+
+`gap`·`padding`·`cornerRadius`·`strokeWidth`·`fontSize` 는 정상 바인딩된다. 크기 축만 안 된다.
+
+→ **크기 토큰(`iconsize-*`·`controlheight-*`)은 "허용된 값 목록" 역할만 한다.** 노드에는 숫자가
+남으므로, 값이 규격 밖으로 새는 것은 `verify.py` 의 아이콘 크기 게이트로 막는다.
+소비 측(iOS `DSIconSize` 등)은 `variables.json` 의 정의로 스케일을 생성하면 된다.
+
+## 9. `metadata` 는 저장되지 않는다 — 표식은 `context` 에
+
+`Entity.metadata?: { type: string; [key: string]: any }` 도 스키마에 있지만 **쓰면 사라진다**
+(`Update` 직후 `Get` 하면 `undefined`). 같은 자리에 쓸 수 있는 것은 `context`(문자열)다.
+
+```js
+Update(id, {metadata: {type: "platform-chrome"}})   // ❌ 사라짐
+Update(id, {context: "platform-chrome"})            // ✅ 남음
+```
+
+→ 초코로드는 `context` 를 표식 슬롯으로 쓴다: `platform-chrome`(모든 플랫폼에서 코드 생성 대상
+아님) · `native-substitute:ios`(그 플랫폼만 시스템 컨트롤로 대체). 문자열이라 규약을 문서로
+고정해야 한다.
+
+## 10. `Copy` 로 컴포넌트를 복제하면 **인스턴스(ref)** 가 된다
+
+`Copy(reusableId, parent, {...})` 는 독립 사본이 아니라 원본을 가리키는 `ref` 를 만든다.
+`reusable: true` 를 같이 줘도 "재사용 가능한 인스턴스"가 될 뿐이라, 다른 컴포넌트들이 전부
+독립 프레임인 문서에서는 규약이 갈라진다(자식이 없어 소비 측이 빈 컴포넌트로 읽는다).
+
+→ **독립 사본이 필요하면 트리를 펼쳐 `Replace` 한다.** `Get` 결과가 round-trip 되는 성질을 쓴다:
+
+```js
+const strip = (n) => { const {id, ...r} = n; if (r.children) r.children = r.children.map(strip); return r }
+const tmp = Copy(baseId, parent, {name: "tmp"})              // 일단 ref 로 만들고
+const real = Replace(tmp, {...strip(Get(baseId)), name: "새 컴포넌트", reusable: true})
+```
+
+`Replace` 는 전체 교체라 **키 삭제도 된다**(`stroke: undefined` 로 테두리 제거). `Update` 는 병합이라 안 된다(2번 참고).
+
+## 11. 대량 수정은 `execute` 한 번에 — 롤백이 안전망
 
 `execute` 는 실패 시 **블록 전체를 롤백**합니다. 부분 적용으로 어긋난 상태가 남지 않으므로,
 매핑 테이블 + `Get(id, visitor)` + `Update` 조합으로 한 번에 처리하는 편이 안전합니다.

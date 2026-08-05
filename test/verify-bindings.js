@@ -82,6 +82,31 @@ function diff(a, b, p, out) {
 const trunc = (s) => (s == null ? String(s) : s.length > 90 ? s.slice(0, 90) + "…" : s);
 
 // ---- 기대값은 하드코딩하지 않고 데이터에서 센다 (code.js 가 실제로 방문하는 범위: 컴포넌트 + 화면) ----
+// 화면이 실제로 참조하는 컴포넌트 id 집합 (플러그인의 "필요한 컴포넌트만 생성"과 같은 기준).
+// 컴포넌트는 최상위 엔트리로 한 번, DS 카탈로그 화면 안에 물리적으로 또 한 번 담긴다.
+// 참조되는 컴포넌트는 두 번 다 만들어지지만, **아무도 안 쓰는 컴포넌트는 카탈로그 사본만** 만들어진다.
+// 분모를 그대로 두면 그 차이만큼 커버리지 방정식이 어긋난다 (Textarea 변형 신설 때 실측).
+function referencedComponents(data) {
+  const byId = {};
+  for (const c of data.components || []) if (c.id) byId[c.id] = c;
+  const need = new Set(), stack = [];
+  const seed = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (n.type === "ref" && n.ref) stack.push(n.ref);
+    for (const k of n.children || []) seed(k);
+    const d = n.descendants;
+    if (d) for (const kk in d) seed(d[kk]);
+  };
+  (data.screens || []).forEach(seed);
+  while (stack.length) {
+    const id = stack.pop();
+    if (need.has(id) || !byId[id]) continue;
+    need.add(id);
+    seed(byId[id]);
+  }
+  return need;
+}
+
 function countRefs(data, key) {
   const c = {};
   const walk = (n) => {
@@ -92,7 +117,9 @@ function countRefs(data, key) {
     const d = n.descendants;
     if (d) for (const kk in d) walk(d[kk]);
   };
-  [].concat(data.components || [], data.screens || []).forEach(walk);
+  const used = referencedComponents(data);
+  (data.components || []).forEach((c2) => { if (!c2.id || used.has(c2.id)) walk(c2); });
+  (data.screens || []).forEach(walk);
   return c;
 }
 const sum = (o) => Object.keys(o).reduce((a, k) => a + o[k], 0);
