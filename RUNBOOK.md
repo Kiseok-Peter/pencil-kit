@@ -53,7 +53,7 @@ pencil-kit/                  ← 이 키트 (스크립트·플러그인, 재사�
    for (const id of ["ID1","ID2"]) Print(JSON.stringify(Get(id,{resolveVariables:false,resolveInstances:false,includePathGeometry:true})).length, id)
    ```
    문자수 ÷ 4 ≈ 토큰. 개별값으로 청크 경계를 정한다.
-4. **컴포넌트 — 1콜 일괄** (초코로드 실측 52개 = 36K자 ≈ 9K 토큰):
+4. **컴포넌트 — 1콜 일괄** (초코로드 실측 56개 = 45K자 ≈ 11K 토큰):
    ```js
    const ids=[/* reusable 또는 필요분 */]
    Print(JSON.stringify(ids.map(id=>Get(id,{resolveVariables:false,resolveInstances:false,includePathGeometry:true}))))
@@ -64,6 +64,41 @@ pencil-kit/                  ← 이 키트 (스크립트·플러그인, 재사�
 6. **병합**: `cd pencil-kit && python3 merge-nodes.py --data <DATA> --inventory _inventory.json`
    - `누락 ref` 가 보고되면 그 id 들만 5 로 추가 추출 후 재실행
    - 삭제된 노드가 보고되면 확인 후 `--prune`
+
+6-1. **지문 대조 — 증분 추출을 했으면 반드시 한다** ⚠️
+
+   증분은 "내가 바꾼 것"만 뽑는데, **Pencil 은 편집 한 번에 무관한 화면의 좌표까지 다시 씁니다.**
+   실측: 버튼 이름 5개만 바꿨는데 손대지 않은 화면 12곳이 갈라져 있었습니다. 즉 **어디가 바뀌었는지를
+   내가 안다는 전제 자체가 틀립니다.** 지문 대조가 그 전제 없이 전수로 확인해 줍니다.
+
+   `.pen` 쪽(`execute`)과 로컬(python)에서 **같은 규칙**으로 항목별 지문을 뽑아 대조합니다 —
+   키 정렬 정규 JSON → FNV-1a 32bit. 로컬 지문을 스니펫에 넣어 보내면 **어긋난 것만** 돌아옵니다.
+
+   ```js
+   function canon(v){
+     if(v===null||typeof v==="boolean")return JSON.stringify(v)
+     if(Array.isArray(v))return "["+v.map(canon).join(",")+"]"
+     if(typeof v==="object")return "{"+Object.keys(v).sort().map(k=>JSON.stringify(k)+":"+canon(v[k])).join(",")+"}"
+     return JSON.stringify(v)
+   }
+   // ⚠️ h*16777619 로 쓰면 배정밀도 한계로 값이 틀린다(fnv("abc") 가 1a47e90b 여야 정상). 시프트로 곱한다.
+   function fnv(s){let h=0x811c9dc5;const b=unescape(encodeURIComponent(s))
+     for(let i=0;i<b.length;i++){h^=b.charCodeAt(i);h=(h+((h<<1)+(h<<4)+(h<<7)+(h<<8)+(h<<24)))>>>0}
+     return ("0000000"+h.toString(16)).slice(-8)}
+   const L={/* 로컬 지문 id:hash */}
+   for(const id of Get((n,c)=>{if(!c.parentCtx){c.skipChildren();return n.id}}))
+     { const f=fnv(canon(Get(id,{resolveVariables:false,resolveInstances:false,includePathGeometry:true})))
+       if(L[id]!==f) Print("불일치",id,f,L[id]) }
+   ```
+
+   파이썬 쪽은 같은 규칙이되 **정수형 float(76.0)을 int 로 내려야** JS 와 맞습니다.
+   최상위(화면)와 컴포넌트를 **한 콜에 다 넣으면 `InternalError: interrupted`** 로 죽으니 나눠 돌립니다.
+
+   불일치가 나오면 대개 다음 둘 중 하나입니다 — 둘 다 값 자체는 레이아웃에 영향이 없지만,
+   그냥 두면 diff·지문이 계속 빨간불이라 한 번에 맞춥니다:
+   - **죽은 좌표 재계산** — 노드 자신의 `x`/`y` 와 **인스턴스 `descendants` 안의 `x`/`y`** 양쪽을 본다
+   - **`strokeLinejoin` 같은 속성 누락** — `strokeWidth` 가 면별 dict 인 프레임에서 관측됨.
+     전 문서에서 그 속성을 가진 노드를 한 번에 찾아 맞추는 편이 빠르다
 7. **변수 — 항상 전체** (3~4KB 라 증분 불필요). `execute` 로 `Print(JSON.stringify(GetVariables()))`
    → **`{themes, variables}` 전체 그대로** `<DATA>/variables.json` 저장. 평탄화(`{이름:"#hex"}`) **금지** —
    테마별(light/dark) 값 + number/string 변수가 소실된다. (build 보다 먼저 — hex 역복원 맵의 기준)

@@ -76,7 +76,7 @@ DesignSystem 모듈에 배치하고 멈춘다.
 
 ## Step 3 — DesignSystem: 컴포넌트 View
 **트리거:** "SWIFTUI-RUNBOOK Step 3: 컴포넌트들 재사용 View 로 만들어줘"
-**Claude 가 할 일:** `design-data.json` 의 `components`(reusable 52개) → 각각 재사용 SwiftUI `View`.
+**Claude 가 할 일:** `design-data.json` 의 `components`(reusable 56개) → 각각 재사용 SwiftUI `View`.
 - 인스턴스가 자주 바꾸는 값(텍스트/아이콘/상태) → View 파라미터
 - Step 1 토큰 + **Step 1-T 프리셋** + Step 2 아이콘 사용
 - 텍스트 노드의 **`preset` 필드를 그대로 쓴다** (`extract-for-swiftui.py` 가 주입).
