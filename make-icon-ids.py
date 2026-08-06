@@ -15,7 +15,16 @@ import os
 import sys
 from collections import Counter
 
-DOC_PREFIX = "DS - "   # 디자인시스템 카탈로그 = 규격 견본 (verify.py 와 같은 규약)
+# 디자인시스템 카탈로그 = 규격 견본. `.pen` 의 표식(`context`)을 먼저 보고, 없으면 이름 접두로
+# 폴백한다 (verify.py · extract-for-swiftui.py 와 같은 규약 — 피드백 5 §5).
+CATALOG_CONTEXT = "design-system-catalog"
+DOC_PREFIX = "DS - "
+
+def is_catalog(node):
+    ctx = node.get("context")
+    if isinstance(ctx, str) and ctx:
+        return ctx == CATALOG_CONTEXT
+    return str(node.get("name") or "").startswith(DOC_PREFIX)
 
 def _pop_data(argv):
     if "--data" in argv:
@@ -32,7 +41,7 @@ def _num(v, var_nums):
         return var_nums.get(v[1:], v)
     return v
 
-def collect(n, top, dark, out, var_nums):
+def collect(n, top, dark, out, var_nums, doc):
     """모든 아이콘 노드를 후보로 모은다 (첫 등장만 쓰면 사용처 크기·색을 물려받는다)."""
     if isinstance(n, dict):
         if n.get("type") == "icon" and n.get("icon") and (n.get("library") or "lucide") == "lucide":
@@ -40,16 +49,16 @@ def collect(n, top, dark, out, var_nums):
                 "icon": n["icon"], "id": n.get("id"), "top": top, "dark": dark,
                 "w": _num(n.get("width"), var_nums), "h": _num(n.get("height"), var_nums),
                 "fill": n.get("fill"),
-                "doc": bool(top and top.startswith(DOC_PREFIX)),
+                "doc": doc,
             })
         for c in n.get("children", []) or []:
-            collect(c, top, dark, out, var_nums)
+            collect(c, top, dark, out, var_nums, doc)
         for ov in (n.get("descendants") or {}).values():
             if isinstance(ov, dict):
-                collect(ov, top, dark, out, var_nums)
+                collect(ov, top, dark, out, var_nums, doc)
     elif isinstance(n, list):
         for x in n:
-            collect(x, top, dark, out, var_nums)
+            collect(x, top, dark, out, var_nums, doc)
 
 def main():
     nodes = json.load(open(os.path.join(DATA, "pen-nodes.json"), encoding="utf-8"))
@@ -68,7 +77,7 @@ def main():
         # ⚠️ 라이트/다크 판을 구분한다. 같은 $text-primary 라도 다크판은 #F5F4F1(거의 흰색)로 렌더돼
         #    흰 배경에서 안 보이는 PDF 가 나온다. export_nodes 는 "보이는 대로" 뽑기 때문.
         dark = ((t.get("theme") or {}).get("mode") == "dark")
-        collect(t, t.get("name"), dark, cands, var_nums)
+        collect(t, t.get("name"), dark, cands, var_nums, is_catalog(t))
     if not cands:
         print("아이콘 노드가 없습니다."); return
 
@@ -100,7 +109,7 @@ def main():
 
     print(f"고유 아이콘 {len(rep)}종 -> {out}")
     print(f"  기준: 크기 {std_size}x{std_size} · 색 {std_fill} · 라이트판 (데이터 최빈값)")
-    print(f"  카탈로그('{DOC_PREFIX}*') 에서 선택: {len(chosen) - len(off_doc)}/{len(chosen)}")
+    print(f"  카탈로그(context='{CATALOG_CONTEXT}') 에서 선택: {len(chosen) - len(off_doc)}/{len(chosen)}")
     for label, bad in (("카탈로그 밖", off_doc), ("크기 불일치", off_size),
                        ("색 불일치", off_fill), ("다크판에서 선택(흰색 위험)", off_dark)):
         if bad:

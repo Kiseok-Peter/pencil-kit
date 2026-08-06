@@ -63,7 +63,13 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 | `slot: []` (프레임의 **속성** — 노드 타입 아님) | 인스턴스가 자식 트리를 갈아끼우면 `@ViewBuilder` 파라미터, 라벨만 바꾸면 구체 파라미터 |
 | `context: "platform-chrome"` | **코드 생성 대상 아님** — OS 가 그리는 영역(상태바·홈 인디케이터). 직접 그리면 실기기에서 두 벌로 겹친다 |
 | `context: "native-substitute:ios"` | iOS 만 시스템 컨트롤로 대체(`NavigationStack` 툴바·`TabView`). **다른 플랫폼은 디자인대로 그린다** |
+| `context: "design-system-catalog"` (화면 레벨) | **코드 생성 대상 아님** — 디자인시스템 설명용 카탈로그 화면(`DS - *` 16개). 앱 화면이 아니라 견본 진열장이라, 여기 텍스트는 앱 프리셋에 없는 문서용 크기를 쓴다(정상) |
 | `opacity` / `rotation` | `.opacity()` / `.rotationEffect()` |
+
+> **`x`/`y` 는 `swiftui-input.json` 에 오면 살아있는 값입니다.** 부모가 flex 라 무시되는 좌표는
+> 추출 단계에서 전부 지웁니다 — 노드 자신의 것(실측 593개)과 **인스턴스 `descendants` 안의 것**
+> (실측 1195개, 그중 살아있는 값 0개) 양쪽 다. Pencil 이 문서를 건드릴 때마다 다시 계산해 넣기 때문에
+> 원본에는 계속 쌓이지만, 소비 측은 볼 일이 없습니다.
 
 ## ⚠️ 고정 규칙 (이 프로젝트 — 반드시 지킬 것)
 
@@ -176,6 +182,45 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 > 값 기반과 함께 생성해도 무방하나, 화면 데이터는 값 기반만 참조한다.
 > `padding` 의 `0` 만 의도적 리터럴 — 나머지는 전부 토큰(예전에 예외였던 탭바 `21` 은 `spacing-20` 으로 통일).
 > `strokeWidth` 는 면별 dict(`{top:"$border-thin"}`)로도 온다 — per-side `.overlay` 로 처리.
+
+### 3-3) 버튼: 이름이 곧 축이다 (`Button - <스타일> - <크기> - <상태>`)
+
+컴포넌트 이름의 칸이 축을 그대로 말합니다. **해당 없는 칸은 생략**합니다.
+
+```
+Button - Primary - Large      스타일 Primary  · 크기 Large(56)
+Button - Subtle - Compact     스타일 Subtle   · 크기 Compact(44)
+Button - Disabled             스타일 칸 없음  ← 비활성은 스타일을 지운다(배경·라벨이 스타일과 무관해진다)
+Text Input - Disabled         스타일·크기 칸 없음 · 상태만
+```
+
+**크기 축** — 높이 하나가 나머지를 전부 끌고 옵니다. 예외 0.
+
+| 크기 | 높이 | cornerRadius | 라벨 프리셋 | 아이콘 | gap |
+|---|---|---|---|---|---|
+| Large | `controlheight-56` | `radius-lg` | `button-primary` | — | `spacing-8` |
+| Regular | `controlheight-52` | `radius-lg` | `button-secondary` | 18 | `spacing-6` |
+| Compact | `controlheight-44` | `radius-md` | `body-small-medium` | 16 | `spacing-4` |
+
+**색 축(스타일)** — 배경·테두리·라벨 3칸이 한 묶음이고, 상태가 그 묶음을 바꿉니다.
+
+| 스타일 | 기본 | 비활성 | 눌림 |
+|---|---|---|---|
+| Primary | `primary` / 라벨 `text-on-primary` | `disabled-bg` / `disabled-text` | **`primary-pressed`** / 라벨 그대로 |
+| Secondary | `surface-dark` / 라벨 `text-primary` | `disabled-bg` / `disabled-text` | **`secondary-pressed`** / 라벨 그대로 |
+| Outlined | `background` + 테두리 `border` / 라벨 `text-primary` | 배경·테두리 그대로 / 라벨 `disabled-text` | `surface` / 라벨 그대로 |
+| Subtle | `background` + 테두리 `border` / 라벨 `text-secondary` | 배경·테두리 그대로 / 라벨 `disabled-text` | `surface` / 라벨 그대로 |
+
+> **Subtle 은 Outlined 의 크기 변형이 아니라 별도 계열**입니다. 테두리 상자는 같지만 라벨이 흐립니다
+> (`text-secondary`). 용도가 달라서입니다 — Outlined 는 행동('길 안내'·'로그아웃'), Subtle 은
+> 펼치기('리뷰 더보기'). 같은 화면에 나란히 놓여 강약이 갈립니다. 아이콘도 라벨과 같은 색을 씁니다.
+>
+> **컴포넌트로 그려진 칸은 12칸 중 5칸뿐**입니다(스타일 4종의 기본 + `Button - Disabled`).
+> 나머지 7칸은 `DS - Buttons` 카탈로그의 **견본**으로만 있고 컴포넌트가 아닙니다 — 화면이 안 쓰는
+> 조합을 컴포넌트로 만들면 죽은 컴포넌트가 늘어서입니다. 생성기는 이 표를 스타일×상태로 구현하세요.
+>
+> **아이콘 유무는 축이 아닙니다.** `icon: Image? = nil` 같은 파라미터로 두세요
+> (상류에도 `Button - Primary - Regular` 하나뿐이고, 아이콘 붙은 판이 따로 있지 않습니다).
 
 ## 4) 컴포넌트 → 재사용 View
 

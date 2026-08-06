@@ -70,7 +70,16 @@ def _num(v):
 # 코드 생성 대상이 아니고 문서 전용 크기(9px 아이콘 라벨 등)를 써서 스케일을 오염시킨다.
 # 재사용 컴포넌트는 카탈로그 안에 물리적으로 들어있지만 최상위에 reusable 로도 등재되므로,
 # 카탈로그를 건너뛰어도 정확히 1회 계상된다(= 중복 계상 해소).
+# 판정은 `.pen` 이 직접 단 표식(`context`)을 먼저 본다 — 이름 접두는 표식이 없을 때의 폴백이다
+# (화면 이름을 바꾸면 조용히 깨지는 짐작이므로. 피드백 5 §5 · extract-for-swiftui.py 와 같은 규약).
+CATALOG_CONTEXT = "design-system-catalog"
 DOC_PREFIX = "DS - "
+
+def is_catalog(node):
+    ctx = node.get("context")
+    if isinstance(ctx, str) and ctx:
+        return ctx == CATALOG_CONTEXT
+    return str(node.get("name") or "").startswith(DOC_PREFIX)
 
 def load(name):
     with open(os.path.join(DATA, name), encoding="utf-8") as f:
@@ -155,7 +164,7 @@ def main():
 
     def typo_scope(n):
         """타이포 커버리지 대상 최상위 노드인가 (컴포넌트 + 제품 화면, 카탈로그 제외)"""
-        return bool(n.get("reusable")) or not str(n.get("name") or "").startswith(DOC_PREFIX)
+        return bool(n.get("reusable")) or not is_catalog(n)
 
     # 무결성 검사 — 카탈로그 포함 전체 범위
     def check(n):
@@ -275,7 +284,8 @@ def main():
                           and v.partition("-")[0] not in TOKEN_BUCKETS})
 
     print(f"검증 대상: 컴포넌트 {comps} · 화면 {screens} · 변수 {len(variables)} (@ {DATA})")
-    print(f"  타이포 집계 범위: 최상위 {scope_n}개(카탈로그 '{DOC_PREFIX}*' 제외) · 텍스트 {text_total[0]}개")
+    print(f"  타이포 집계 범위: 최상위 {scope_n}개(카탈로그 context='{CATALOG_CONTEXT}' 제외) · "
+          f"텍스트 {text_total[0]}개")
     issues = 0
     warns = 0
     def line(ok, msg):
