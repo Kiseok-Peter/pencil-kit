@@ -321,6 +321,34 @@ def main():
     ov_only = sorted(override_icons - node_icons)
     line(True, f"아이콘: icon 노드 {len(node_icons)}종 + 오버라이드 전용 {len(ov_only)}종 = 수집 대상 {len(node_icons | override_icons)}종"
          + (f" (오버라이드 전용: {' '.join(ov_only)})" if ov_only else ""))
+    # 카탈로그 제목 1:1 — 소비 측(iOS 카탈로그)이 이 제목을 캡션으로 그대로 복사해 눈으로 대조한다.
+    # 제목이 **없으면** 눈에 띄지만 **틀린 이름이 붙어 있으면** 맞는 줄 알고 지나간다(실측 8곳).
+    # 한 프레임 안의 (제목 텍스트, 바로 뒤 컴포넌트) 쌍이 문자열까지 같은지 본다.
+    #
+    # ⚠️ 라이트 프레임의 항목은 `reusable` 마스터 그 자체이고, 다크는 그 마스터를 가리키는 `ref` 다.
+    #    `ref` 만 세면 라이트가 0 으로 나온다 — 소비 측이 실제로 그렇게 세어 "라이트가 비었다"고 오해했다.
+    comp_name = {n["id"]: n.get("name") for n in nodes
+                 if isinstance(n, dict) and n.get("reusable")}
+    cat_pairs = cat_bad = 0
+    for s in nodes:
+        if not is_catalog(s):
+            continue
+        kids = s.get("children") or []
+        for i, k in enumerate(kids):
+            cid = k["id"] if k.get("reusable") else (k.get("ref") if k.get("type") == "ref" else None)
+            if cid not in comp_name:
+                continue
+            cat_pairs += 1
+            prev = kids[i - 1] if i > 0 else None
+            if not (prev and prev.get("type") == "text" and prev.get("content") == comp_name[cid]):
+                cat_bad += 1
+                warn(False, f"카탈로그 제목 불일치: {s.get('name')} 의 '{comp_name[cid]}' "
+                            f"제목={prev.get('content')!r}" if prev and prev.get("type") == "text"
+                            else f"카탈로그 제목 없음: {s.get('name')} 의 '{comp_name[cid]}'")
+    if cat_pairs and not cat_bad:
+        line(True, f"카탈로그 제목: {cat_pairs}곳 전부 컴포넌트 이름과 일치 "
+                   f"(라이트=마스터 · 다크=ref, 둘 다 셈)")
+
     line(not undefined_vars, f"정의 안 된 변수 참조: {undefined_vars}" if undefined_vars else "변수 참조: 전부 정의됨")
     line(not typo_type_bad,
          "타이포 변수 타입: fontFamily/fontWeight=string · fontSize/lineHeight/letterSpacing=number 일치"

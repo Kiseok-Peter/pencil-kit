@@ -66,6 +66,29 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 | `context: "design-system-catalog"` (화면 레벨) | **코드 생성 대상 아님** — 디자인시스템 설명용 카탈로그 화면(`DS - *` 16개). 앱 화면이 아니라 견본 진열장이라, 여기 텍스트는 앱 프리셋에 없는 문서용 크기를 쓴다(정상) |
 | `opacity` / `rotation` | `.opacity()` / `.rotationEffect()` |
 
+> ### 카탈로그 프레임을 셀 때 — 라이트는 마스터, 다크는 `ref`
+>
+> `DS - *` 프레임의 항목은 **판마다 표현형이 다릅니다.** 한쪽만 세면 반대쪽이 0 으로 나옵니다.
+>
+> ```
+> DS - Buttons          children = reusable 마스터 15 + 제목 텍스트   ← ref 0개
+> DS - Buttons (Dark)   children = ref 15           + 제목 텍스트   ← 마스터 0개
+> ```
+>
+> 라이트 프레임에 컴포넌트 원본이 물리적으로 들어있고, 다크는 그것을 가리키는 인스턴스입니다.
+> 그래서 세는 규칙은 **"`reusable` 이면 그 노드, `ref` 면 가리키는 대상"** 하나뿐입니다:
+>
+> ```python
+> cid = k["id"] if k.get("reusable") else (k.get("ref") if k.get("type") == "ref" else None)
+> ```
+>
+> **이렇게 세면 `swiftui-input.json` 하나로 라이트·다크 112 항목이 전부 재현됩니다** — 다른 파일을
+> 볼 필요가 없습니다. 제목(바로 앞 텍스트)이 컴포넌트 이름과 같은지는 `verify.py` 가 게이트로 막습니다.
+>
+> ⚠️ **같은 컴포넌트가 두 번 등장합니다** — 최상위 `components` 배열에 한 번, 라이트 카탈로그 프레임
+> 안에 한 번(`PENCIL-MCP-NOTES.md` 7번의 이중 보관). 화면과 컴포넌트를 통째로 순회하며 View 를
+> 생성하면 **컴포넌트가 두 벌 나옵니다.** 카탈로그 화면은 `context` 로 걸러내세요.
+>
 > **`x`/`y` 는 `swiftui-input.json` 에 오면 살아있는 값입니다.** 부모가 flex 라 무시되는 좌표는
 > 추출 단계에서 전부 지웁니다 — 노드 자신의 것(실측 593개)과 **인스턴스 `descendants` 안의 것**
 > (실측 1195개, 그중 살아있는 값 0개) 양쪽 다. Pencil 이 문서를 건드릴 때마다 다시 계산해 넣기 때문에
