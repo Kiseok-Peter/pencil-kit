@@ -229,11 +229,17 @@ Text Input - Disabled         스타일·크기 칸 없음 · 상태만
 
 | 스타일 | 기본 | 비활성 | 눌림 |
 |---|---|---|---|
-| Primary | `primary` / 라벨 `text-on-primary` | `disabled-bg` / `disabled-text` | **`primary-pressed`** / 라벨 그대로 |
+| Primary | `primary` / 라벨 `text-on-primary` | `disabled-bg`(라이트 #F0F0F0 / 다크 #181818) / `disabled-text` | **`primary-pressed`** / 라벨 그대로 |
 | Secondary | `surface-dark` / 라벨 `text-primary` | `disabled-bg` / `disabled-text` | **`secondary-pressed`** / 라벨 그대로 |
 | Outlined | `background` + 테두리 `border` / 라벨 `text-primary` | 배경·테두리 그대로 / 라벨 `disabled-text` | `surface` / 라벨 그대로 |
 | Subtle | `background` + 테두리 `border` / 라벨 `text-secondary` | 배경·테두리 그대로 / 라벨 `disabled-text` | `surface` / 라벨 그대로 |
 
+> **비활성 면 토큰은 두 갈래입니다** — 버튼은 `disabled-bg`, 입력(`Text Input - Disabled`·
+> `Textarea - Disabled`)은 `surface-dark`. `surface-dark` 는 Secondary 기본 면·중립 회색까지
+> 겸하고 있어서, 다크에서 `disabled-bg` 와 값이 같아졌던 적이 있습니다(둘 다 `#2A2A2A`).
+> `disabled-bg` 다크를 `#181818` 로 내려 갈랐고, **구조(두 갈래)는 그대로 둡니다.**
+> 비활성 면을 손볼 일이 생기면 이 두 토큰을 같이 봐야 합니다.
+>
 > **Subtle 은 Outlined 의 크기 변형이 아니라 별도 계열**입니다. 테두리 상자는 같지만 라벨이 흐립니다
 > (`text-secondary`). 용도가 달라서입니다 — Outlined 는 행동('길 안내'·'로그아웃'), Subtle 은
 > 펼치기('리뷰 더보기'). 같은 화면에 나란히 놓여 강약이 갈립니다. 아이콘도 라벨과 같은 색을 씁니다.

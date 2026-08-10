@@ -272,6 +272,15 @@ def main():
         drop_dead_override_xy(r, dead_ids, stat)
 
     out = {
+        # 이 파일이 **무엇을 담고 무엇을 뺐는지** 스스로 밝힌다. 추출할 때 찍는 경고는 그 순간
+        # 사람이 봐야 알지만, 파일은 나중에 혼자 남는다 — 받는 쪽이 전량인 줄 알고 세다 어긋난다.
+        "meta": {
+            "screenFilter": filt,                     # None = 전체 화면
+            "screens": len(screens),
+            "components": len(comps),
+            "componentsTotal": len(all_comps),
+            "componentsDropped": dropped,             # 0 이 아니면 화면을 골라 추린 것이다
+        },
         "variables": d.get("variables", {}),     # 토큰(light/dark) → SwiftUI Color
         "typographyStyles": ts,                    # 프리셋 정의 + 역할 별칭 (소비 규칙은 SWIFTUI-GUIDE §3-1)
         "components": comps,                       # 전량 (화면을 골랐을 때만 그 화면이 쓰는 것으로 추림)

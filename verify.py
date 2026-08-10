@@ -327,27 +327,47 @@ def main():
     #
     # ⚠️ 라이트 프레임의 항목은 `reusable` 마스터 그 자체이고, 다크는 그 마스터를 가리키는 `ref` 다.
     #    `ref` 만 세면 라이트가 0 으로 나온다 — 소비 측이 실제로 그렇게 세어 "라이트가 비었다"고 오해했다.
+    #
+    # ⚠️ 이 검사는 **`line()` 으로 실패**시킨다(경고 아님). `warn()` 이면 종료 코드가 0 이라
+    #    끝에 "이상 없음" 초록불이 찍히고, 소비 측은 CI 든 사람이든 통과로 읽는다 — 실제로 그렇게
+    #    쓰다 어긋난 제목을 그대로 받아 적을 뻔했다.
     comp_name = {n["id"]: n.get("name") for n in nodes
                  if isinstance(n, dict) and n.get("reusable")}
+    CATALOG_EXEMPT = set()   # 일부러 카탈로그에 안 올리는 컴포넌트가 생기면 여기에 **명시적으로** 뺀다
     cat_pairs = cat_bad = 0
+    seen_cat = {False: set(), True: set()}   # 라이트/다크 판별 -> 수록된 컴포넌트 id
     for s in nodes:
         if not is_catalog(s):
             continue
+        dark = (s.get("theme") or {}).get("mode") == "dark"
         kids = s.get("children") or []
         for i, k in enumerate(kids):
             cid = k["id"] if k.get("reusable") else (k.get("ref") if k.get("type") == "ref" else None)
             if cid not in comp_name:
                 continue
             cat_pairs += 1
+            seen_cat[dark].add(cid)
             prev = kids[i - 1] if i > 0 else None
             if not (prev and prev.get("type") == "text" and prev.get("content") == comp_name[cid]):
                 cat_bad += 1
-                warn(False, f"카탈로그 제목 불일치: {s.get('name')} 의 '{comp_name[cid]}' "
+                line(False, f"카탈로그 제목 불일치: {s.get('name')} 의 '{comp_name[cid]}' "
                             f"제목={prev.get('content')!r}" if prev and prev.get("type") == "text"
                             else f"카탈로그 제목 없음: {s.get('name')} 의 '{comp_name[cid]}'")
     if cat_pairs and not cat_bad:
         line(True, f"카탈로그 제목: {cat_pairs}곳 전부 컴포넌트 이름과 일치 "
                    f"(라이트=마스터 · 다크=ref, 둘 다 셈)")
+
+    # 카탈로그 수록 — 제목 검사는 **컴포넌트에서 출발**하므로 항목이 통째로 빠지면 루프에 들어오지도
+    # 않는다. 즉 "제목이 틀린" 건 잡고 "항목이 없는" 건 못 잡는다. 기대값을 고정해 그 방향을 닫는다.
+    # (조용한 누락이 피드백 4~5 사고의 원인이었다 — Textarea 변형 2종이 소비 측에 영영 안 갔다.)
+    if cat_pairs:
+        want = set(comp_name) - CATALOG_EXEMPT
+        for dark, label in ((False, "라이트"), (True, "다크")):
+            if not seen_cat[dark]:
+                continue           # 그 판이 아예 없는 프로젝트는 건너뛴다
+            miss = sorted(comp_name[c] for c in want - seen_cat[dark])
+            line(not miss, f"카탈로그 수록({label}): {len(seen_cat[dark] & want)}/{len(want)}"
+                 + (f" — 빠진 것: {' · '.join(miss)}" if miss else ""))
 
     line(not undefined_vars, f"정의 안 된 변수 참조: {undefined_vars}" if undefined_vars else "변수 참조: 전부 정의됨")
     line(not typo_type_bad,
