@@ -234,6 +234,11 @@ Text Input - Disabled         스타일·크기 칸 없음 · 상태만
 | Outlined | `background` + 테두리 `border` / 라벨 `text-primary` | 배경·테두리 그대로 / 라벨 `disabled-text` | `surface` / 라벨 그대로 |
 | Subtle | `background` + 테두리 `border` / 라벨 `text-secondary` | 배경·테두리 그대로 / 라벨 `disabled-text` | `surface` / 라벨 그대로 |
 
+> **카탈로그가 값을 글자로도 적어둡니다.** `DS - Colors` 는 스와치 옆에 hex 를, `DS - Dimensions` 는
+> px 를 **텍스트로** 씁니다. 스와치는 토큰 바인딩이라 색이 바뀌면 따라오지만 **옆에 적힌 숫자는 안
+> 따라옵니다** — 눈으로는 안 잡힙니다. `verify.py` 가 토큰 정본과 대조합니다(색=실패, 치수=경고).
+> 값을 읽을 곳은 언제나 `variables.json` 이고, 카탈로그 글자는 사람이 보는 사본입니다.
+>
 > **비활성 면 토큰은 두 갈래입니다** — 버튼은 `disabled-bg`, 입력(`Text Input - Disabled`·
 > `Textarea - Disabled`)은 `surface-dark`. `surface-dark` 는 Secondary 기본 면·중립 회색까지
 > 겸하고 있어서, 다크에서 `disabled-bg` 와 값이 같아졌던 적이 있습니다(둘 다 `#2A2A2A`).

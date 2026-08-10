@@ -369,6 +369,84 @@ def main():
             line(not miss, f"카탈로그 수록({label}): {len(seen_cat[dark] & want)}/{len(want)}"
                  + (f" — 빠진 것: {' · '.join(miss)}" if miss else ""))
 
+    # 토큰 카탈로그 — 색은 hex 를 **글자로** 적어두므로 값이 바뀌면 조용히 틀린 말을 하게 된다.
+    # 스와치 자체는 토큰 바인딩이라 색은 맞게 나오고 **옆에 적힌 숫자만 낡는다** — 눈으로는 안 잡힌다.
+    # (실측: disabled-bg 다크를 바꾼 뒤 카탈로그 글자가 옛 값 그대로였다. 신설 토큰 2종은 아예 빠져 있었다.)
+    #
+    # 셀 구조는 [스와치, 이름 텍스트, 값 텍스트] 3형제다. 이름 텍스트를 찾아 앞뒤를 본다.
+    DIM_EXEMPT = {"spacing-xs", "spacing-sm", "spacing-md", "spacing-lg", "spacing-xl"}  # 미사용 레거시
+    color_tok = {k for k, t in var_types.items() if t == "color"}
+    num_tok = {k for k, t in var_types.items() if t == "number"}
+
+    def token_value(name, mode):
+        val = (variables.get(name) or {}).get("value")
+        if not isinstance(val, list):
+            return val
+        for m in val:
+            if isinstance(m, dict) and (m.get("theme") or {}).get("mode") == mode:
+                return m.get("value")
+        return None
+
+    cat_cells = {False: {}, True: {}}   # 라이트/다크 -> {토큰: (스와치 fill, 적힌 값)}
+    cat_text = {False: set(), True: set()}   # 색과 같이 판을 가른다 — 안 가르면 한쪽만 빠져도 못 잡는다
+    def scan_cells(n, dark):
+        if isinstance(n, dict):
+            kids = n.get("children") or []
+            for i, c in enumerate(kids):
+                if c.get("type") == "text" and isinstance(c.get("content"), str):
+                    # 카탈로그가 토큰을 적는 방식이 두 가지다 — 셀 이름처럼 **단독**으로(`spacing-16`),
+                    # 또는 설명글 안에 **`$토큰` 으로 섞여서**(`body · $font-body $fontsize-body 15 / …`).
+                    # 부분 문자열로 세면 `spacing-2` 가 `spacing-20` 에 걸려 없는데도 있다고 나오므로,
+                    # 공백으로 쪼갠 낱말에서 `$` 와 구두점만 떼고 **낱말 단위**로 맞춘다.
+                    for w in c["content"].split():
+                        cat_text[dark].add(w.lstrip("$").strip(".,·/()[]"))
+                    tok = c["content"]
+                    if tok in color_tok:
+                        shape = kids[i - 1] if i > 0 else None
+                        valtx = kids[i + 1] if i + 1 < len(kids) else None
+                        cat_cells[dark][tok] = (shape.get("fill") if shape else None,
+                                                valtx.get("content") if valtx else None)
+                scan_cells(c, dark)
+        elif isinstance(n, list):
+            for c in n:
+                scan_cells(c, dark)
+    for s in nodes:
+        if is_catalog(s):
+            scan_cells(s, (s.get("theme") or {}).get("mode") == "dark")
+
+    if cat_cells[False]:
+        for dark, label, mode in ((False, "라이트", "light"), (True, "다크", "dark")):
+            got = cat_cells[dark]
+            if not got:
+                continue
+            miss = sorted(color_tok - set(got))
+            bad = sorted(t for t, (fl, hx) in got.items() if fl != "$" + t)
+            stale = sorted(f"{t}(적힘 {hx} · 실제 {token_value(t, mode)})"
+                           for t, (fl, hx) in got.items()
+                           if hx and token_value(t, mode)
+                           and str(hx).upper() != str(token_value(t, mode)).upper())
+            ok = not (miss or bad or stale)
+            line(ok, f"색 카탈로그({label}): {len(got)}/{len(color_tok)} 수록 · 값 일치" if ok else
+                 f"색 카탈로그({label}) 어긋남"
+                 + (f" · 빠짐 {' '.join(miss)}" if miss else "")
+                 + (f" · 스와치 fill 불일치 {' '.join(bad)}" if bad else "")
+                 + (f" · 적힌 값 낡음 {' / '.join(stale)}" if stale else ""))
+
+        # 치수는 바인딩이 불가능(Pencil 이 width/height 변수 참조를 무시)해서 카탈로그에 없어도
+        # 화면은 멀쩡하다. 그만큼 조용히 빠지므로 보긴 하되 경고로 둔다.
+        want_dim = num_tok - DIM_EXEMPT
+        dim_ok = True
+        for dark, label in ((False, "라이트"), (True, "다크")):
+            if not cat_text[dark]:
+                continue
+            miss = sorted(t for t in want_dim if t not in cat_text[dark])
+            if miss:
+                dim_ok = False
+                warn(False, f"치수 토큰 {len(miss)}개가 {label} 카탈로그에 없음: {' '.join(miss)}")
+        if dim_ok:
+            line(True, f"치수 카탈로그: number 토큰 {len(want_dim)}종 전부 라이트·다크 수록"
+                       f" (레거시 {len(DIM_EXEMPT)}종 제외)")
+
     line(not undefined_vars, f"정의 안 된 변수 참조: {undefined_vars}" if undefined_vars else "변수 참조: 전부 정의됨")
     line(not typo_type_bad,
          "타이포 변수 타입: fontFamily/fontWeight=string · fontSize/lineHeight/letterSpacing=number 일치"
