@@ -61,6 +61,54 @@ def diff_map(old, new):
     changed = [nm(new, i) for i in new if i in old and sig(new[i]) != sig(old[i])]
     return sorted(added), sorted(changed), sorted(removed)
 
+# 토큰 **참조**가 옮겨간 것을 따로 뽑는다.
+#
+# 값이 바뀌면 소비 측 생성기가 따라오지만, "어느 토큰을 쓰는가"가 바뀌면 **아무 게이트도 안 운다**
+# — 생성물(변수 파일·Color Set)은 한 글자도 안 바뀌고 사람이 고칠 코드만 바뀌기 때문이다.
+# 실측: 입력 비활성을 `$surface-dark` → `$disabled-bg` 로 옮겼더니 소비 측 생성물은 무변동이었고
+# 정작 손댈 곳은 컴포넌트 코드 한 줄이었다. "~수정" 목록만으로는 그걸 알 수 없다.
+TOKEN_PROPS = ("fill", "stroke", "cornerRadius", "gap", "padding", "strokeWidth",
+               "fontSize", "fontFamily", "fontWeight", "letterSpacing", "lineHeight",
+               "width", "height")
+
+def token_refs(node, path=""):
+    """(경로, 속성) -> `$토큰` 문자열. 리스트(padding 등)는 칸 번호까지 적는다."""
+    out = {}
+    def walk(n, p):
+        if isinstance(n, dict):
+            here = p + "/" + (n.get("name") or n.get("id") or "")
+            for k in TOKEN_PROPS:
+                v = n.get(k)
+                if isinstance(v, str) and v.startswith("$"):
+                    out[(here, k)] = v
+                elif isinstance(v, list):
+                    for i, e in enumerate(v):
+                        if isinstance(e, str) and e.startswith("$"):
+                            out[(here, f"{k}[{i}]")] = e
+            for c in n.get("children") or []:
+                walk(c, here)
+            for key, ov in (n.get("descendants") or {}).items():
+                if isinstance(ov, dict):
+                    walk(ov, here + "/" + key)
+        elif isinstance(n, list):
+            for x in n:
+                walk(x, p)
+    walk(node, path)
+    return out
+
+def diff_token_refs(old, new):
+    """바뀐 노드들에서 토큰 참조가 옮겨간 것만 뽑는다 (값 변경이 아니라 **참조 변경**)."""
+    moved = []
+    for i in new:
+        if i not in old or sig(new[i]) == sig(old[i]):
+            continue
+        o, n = token_refs(old[i]), token_refs(new[i])
+        for key in sorted(set(o) & set(n)):
+            if o[key] != n[key]:
+                where, prop = key
+                moved.append((new[i].get("name") or i, where.lstrip("/"), prop, o[key], n[key]))
+    return moved
+
 def diff_tokens(old, new):
     ov, nv = old.get("variables", {}), new.get("variables", {})
     added = sorted(k for k in nv if k not in ov)
@@ -106,6 +154,13 @@ def main():
     print(f"토큰:    {fmt(*tok)}")
     print(f"컴포넌트: {fmt(*comp)}")
     print(f"화면:    {fmt(*scrn)}")
+    moved = diff_token_refs(oc, nc) + diff_token_refs(os_, ns)
+    if moved:
+        print(f"\n토큰 참조 이동 {len(moved)}건 — **값이 아니라 어느 토큰을 쓰는가**가 바뀌었습니다.")
+        print("  생성물(변수 파일·Color Set)은 무변동이라 소비 측 게이트가 안 웁니다. 사람이 따라가야 합니다.")
+        for name, where, prop, o, n in moved:
+            print(f"  · {name} · {where} · {prop}:  {o} → {n}")
+
     total = sum(len(x) for grp in (tok, comp, scrn) for x in grp)
     if total == 0:
         print("→ 이전 스냅샷과 동일 (작업할 변경 없음)")

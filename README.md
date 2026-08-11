@@ -61,7 +61,7 @@ cd pencil-kit && python3 launcher.py
 | `merge-nodes.py` | 부분 추출 결과(part)를 id 기준 병합 — 증분 추출 지원 | 공통 |
 | `verify.py` | export 데이터 무결성 검증(ref·절단·아이콘·변수·타이포·프리셋 커버리지·아이콘 크기 규격) | 공통 |
 | `make-typography-styles.py` | `DS - Typography` 프레임 → `typography-styles.json` (Figma Text Style · iOS 프리셋 공용 원본). 카탈로그 자기점검 2종 포함 — 라이트·다크판 대조, 설명글·실제값 대조 | 공통 |
-| `diff.py` | 지난 스냅샷 대비 변경(컴포넌트/화면/토큰 +~-) 감지 | 공통 |
+| `diff.py` | 지난 스냅샷 대비 변경(컴포넌트/화면/토큰 +~-) 감지 + **토큰 참조 이동**을 따로 보고 | 공통 |
 | `PENCIL-MCP-NOTES.md` | `.pen` 편집 시 MCP 함정 모음(실측) | 공통 |
 | `manifest.json` `code.js` `ui.html` | Figma 플러그인 본체 | Figma |
 | `test/verify-bindings.js` | 플러그인 오프라인 검증(Figma 없이 `node` 로) | Figma |
