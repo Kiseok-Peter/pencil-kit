@@ -447,6 +447,66 @@ def main():
             line(True, f"치수 카탈로그: number 토큰 {len(want_dim)}종 전부 라이트·다크 수록"
                        f" (레거시 {len(DIM_EXEMPT)}종 제외)")
 
+    # 마스터가 낡았는가 — 앱 인스턴스가 **전부** 같은 값으로 덮으면 마스터 값은 아무 데도 안 쓰인다.
+    # 카탈로그 견본만 그 값을 보여주므로 "카탈로그가 실물에 없는 색을 광고"하는 상태가 된다.
+    # (실측: Skeleton List Item 4노드가 5/5 인스턴스에서 $surface 로 덮여 있었다 — 소비 측이 찾아냈다)
+    #
+    # 정당한 경우도 있다. `Checkbox Row - Unchecked` 의 라벨은 상태가 아니라 `[선택]` 항목이라
+    # 흐린 것이고, 라벨색을 호출부가 넘기기로 합의한 자리다 → 아래 목록으로 **명시적으로** 뺀다.
+    # 기계가 못 가르는 축이라 경고로 둔다(실패 아님).
+    MASTER_OVERRIDE_OK = {("Checkbox Row - Unchecked", "label")}
+    comp_by_id = {n["id"]: n for n in nodes if isinstance(n, dict) and n.get("reusable")}
+    master_fill = {}          # (컴포넌트id, 노드id) -> (컴포넌트명, 노드명, 토큰)
+    for cid, c in comp_by_id.items():
+        def collect(n):
+            if isinstance(n, dict):
+                f = n.get("fill")
+                if isinstance(f, str) and f.startswith("$") and n.get("id"):
+                    master_fill[(cid, n["id"])] = (c.get("name"), n.get("name") or n["id"], f)
+                for ch in n.get("children") or []:
+                    collect(ch)
+        collect(c)
+
+    seen_inst = {}            # (컴포넌트id, 노드id) -> [전체 인스턴스 수, {덮은 값: 횟수}]
+    def scan_inst(n):
+        if isinstance(n, dict):
+            if n.get("type") == "ref" and n.get("ref") in comp_by_id:
+                ov = n.get("descendants") or {}
+                for (cid, nid) in master_fill:
+                    if cid != n["ref"]:
+                        continue
+                    rec = seen_inst.setdefault((cid, nid), [0, {}])
+                    rec[0] += 1
+                    o = ov.get(nid)
+                    if isinstance(o, dict) and isinstance(o.get("fill"), str):
+                        rec[1][o["fill"]] = rec[1].get(o["fill"], 0) + 1
+            for ch in n.get("children") or []:
+                scan_inst(ch)
+            for o in (n.get("descendants") or {}).values():
+                if isinstance(o, dict):
+                    scan_inst(o)
+        elif isinstance(n, list):
+            for x in n:
+                scan_inst(x)
+    for s in nodes:
+        if not is_catalog(s) and not s.get("reusable"):
+            scan_inst(s)
+
+    stale = []
+    for key, (n_all, ovs) in sorted(seen_inst.items()):
+        cname, nname, tok = master_fill[key]
+        if n_all < 2 or (cname, nname) in MASTER_OVERRIDE_OK:
+            continue
+        if sum(ovs.values()) == n_all and len(ovs) == 1:
+            to = next(iter(ovs))
+            if to != tok:
+                stale.append(f"{cname}/{nname}: 마스터 {tok} → 인스턴스 {n_all}/{n_all} 전부 {to}")
+    warn(not stale, f"마스터 값이 앱에서 안 쓰임 {len(stale)}곳 — "
+                    f"카탈로그만 그 색을 보여주게 된다: " + " · ".join(stale))
+    if not stale and seen_inst:
+        line(True, f"마스터 정본: 인스턴스가 전부 덮는 노드 없음 "
+                   f"(검사 {len(seen_inst)}곳 · 의도된 예외 {len(MASTER_OVERRIDE_OK)}곳 제외)")
+
     line(not undefined_vars, f"정의 안 된 변수 참조: {undefined_vars}" if undefined_vars else "변수 참조: 전부 정의됨")
     line(not typo_type_bad,
          "타이포 변수 타입: fontFamily/fontWeight=string · fontSize/lineHeight/letterSpacing=number 일치"
