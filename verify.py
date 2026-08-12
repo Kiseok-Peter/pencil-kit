@@ -492,18 +492,30 @@ def main():
         if not is_catalog(s) and not s.get("reusable"):
             scan_inst(s)
 
-    stale = []
+    stale, axis = [], []
     for key, (n_all, ovs) in sorted(seen_inst.items()):
         cname, nname, tok = master_fill[key]
         if n_all < 2 or (cname, nname) in MASTER_OVERRIDE_OK:
             continue
-        if sum(ovs.values()) == n_all and len(ovs) == 1:
+        if sum(ovs.values()) != n_all:
+            continue                      # 마스터 값을 쓰는 인스턴스가 있다 = 정상
+        if len(ovs) == 1:
             to = next(iter(ovs))
             if to != tok:
                 stale.append(f"{cname}/{nname}: 마스터 {tok} → 인스턴스 {n_all}/{n_all} 전부 {to}")
+        else:
+            # 마스터 값은 안 쓰이는데 인스턴스가 **여러 값으로 갈린다** = 변형 축이 빠진 신호.
+            # 마스터를 한 값으로 고칠 수 없으니 처방이 다르다 — 톤/계열 같은 축을 세워야 한다.
+            # (실측: Popup Dialog 의 아이콘이 warning 3 · error 4 로 갈려 있었고, 소비 측이
+            #  그중 error 만 보고 3종짜리 열거형을 만들어 warning 3화면이 빠질 뻔했다)
+            axis.append(f"{cname}/{nname}: 마스터 {tok} 사용 0회 → "
+                        + " ".join(f"{v}×{c}" for v, c in sorted(ovs.items(), key=lambda x: -x[1])))
     warn(not stale, f"마스터 값이 앱에서 안 쓰임 {len(stale)}곳 — "
                     f"카탈로그만 그 색을 보여주게 된다: " + " · ".join(stale))
-    if not stale and seen_inst:
+    warn(not axis, f"변형 축이 빠진 것으로 보이는 곳 {len(axis)}곳 — 마스터 값은 안 쓰이고 "
+                   f"인스턴스가 여러 값으로 갈린다. 소비 측이 일부만 보고 축을 세우면 나머지가 "
+                   f"조용히 빠진다: " + " · ".join(axis))
+    if not stale and not axis and seen_inst:
         line(True, f"마스터 정본: 인스턴스가 전부 덮는 노드 없음 "
                    f"(검사 {len(seen_inst)}곳 · 의도된 예외 {len(MASTER_OVERRIDE_OK)}곳 제외)")
 
