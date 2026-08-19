@@ -8,6 +8,7 @@
 
 import json
 import os
+import shutil
 import sys
 
 def _pop_data(argv):
@@ -225,6 +226,46 @@ def needed_components(screens, all_components):
         stack += [x for x in inner if x not in need]
     return [by_id[i] for i in need]
 
+def collect_image_urls(roots):
+    """실린 노드들이 참조하는 로컬 이미지 url (http/data 제외)."""
+    urls = set()
+    def _w(n):
+        if isinstance(n, dict):
+            f = n.get("fill")
+            if isinstance(f, dict) and f.get("type") == "image":
+                u = f.get("url") or ""
+                if u and not u.startswith(("http://", "https://", "data:")):
+                    urls.add(u)
+            for c in n.get("children") or []:
+                _w(c)
+            for ov in (n.get("descendants") or {}).values():
+                if isinstance(ov, dict):
+                    _w(ov)
+        elif isinstance(n, list):
+            for x in n:
+                _w(x)
+    for r in roots:
+        _w(r)
+    return urls
+
+def ship_images(roots):
+    """참조 이미지를 export 로 동반 복사. url 은 .pen 기준 상대경로(데이터 폴더의 부모)라
+    export 만 받는 소비 측에는 보이지 않는 파일이었다 (피드백 13 §2-1). 여기서 같은
+    상대경로로 복사해 swiftui-input.json 의 url 이 export 기준으로도 성립하게 만든다."""
+    pen_root = os.path.dirname(DATA)
+    urls = collect_image_urls(roots)
+    copied, missing = 0, []
+    for u in sorted(urls):
+        src, dst = os.path.join(pen_root, u), os.path.join(DATA, u)
+        if not os.path.isfile(src):
+            missing.append(u)
+            continue
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if not (os.path.isfile(dst) and os.path.getsize(dst) == os.path.getsize(src)):
+            shutil.copy2(src, dst)
+            copied += 1
+    return urls, copied, missing
+
 def main():
     d = load("design-data.json")
     filt = ARGS[0] if ARGS else None
@@ -317,6 +358,12 @@ def main():
         print("  ⚠️ 프리셋 없음 — make-typography-styles.py 를 먼저 실행하세요 (낱개 토큰으로만 생성됨)")
     print(f"  죽은 x/y {stat['xy']}개 제거 (부모가 flex 라 무시되는 값) · "
           f"오버라이드 안 {stat['ov_xy']}개 제거 (마스터에서 부모 레이아웃 조회)")
+    imgs, copied, img_missing = ship_images(comps + screens)
+    if imgs:
+        print(f"  이미지 동반: 로컬 참조 {len(imgs)}건 → {os.path.join(DATA, 'images')} "
+              f"(새로 복사 {copied}건)")
+    for u in img_missing:
+        print(f"  ❌ 이미지 원본 없음: {u} (.pen 기준 — 참조가 깨져 있다)")
 
 if __name__ == "__main__":
     main()

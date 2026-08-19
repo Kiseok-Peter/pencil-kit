@@ -303,6 +303,30 @@ def main():
             print("  ⚠️ " + msg)
 
     line(not orphan_refs, f"ref 해소: 끊긴 참조 {len(orphan_refs)}개" + (f" {sorted(orphan_refs)}" if orphan_refs else ""))
+    # 이미지 참조 — fill 의 url 은 .pen 파일 기준 상대경로다(데이터 폴더의 부모).
+    # 원본이 없으면 깨진 참조(실패). 원본은 있어도 export 에 동반본이 없으면
+    # export 만 받는 소비 측에는 존재하지 않는 파일이다(경고) — 피드백 13 §2-1 에서
+    # exists:False 로 발견된 사각지대. 동반 복사는 extract-for-swiftui.py 가 맡는다.
+    img_urls = set()
+    def _collect_img(n):
+        f = n.get("fill")
+        if isinstance(f, dict) and f.get("type") == "image":
+            u = f.get("url") or ""
+            if u and not u.startswith(("http://", "https://", "data:")):
+                img_urls.add(u)
+    walk(nodes, _collect_img)
+    _pen_root = os.path.dirname(DATA)
+    img_missing = sorted(u for u in img_urls if not os.path.isfile(os.path.join(_pen_root, u)))
+    img_unshipped = sorted(u for u in img_urls if not os.path.isfile(os.path.join(DATA, u)))
+    line(not img_missing,
+         (f"이미지 참조: 로컬 {len(img_urls)}건 원본 전부 실재 (.pen 기준)") if not img_missing else
+         (f"이미지 원본 없음 {len(img_missing)}건 (.pen 기준 {_pen_root}): " + " ".join(img_missing[:4])
+          + (" …" if len(img_missing) > 4 else "")))
+    if img_urls:
+        warn(not img_unshipped,
+             f"export 미동반 이미지 {len(img_unshipped)}건 — export 만 소비하는 쪽에는 없는 파일: "
+             + " ".join(img_unshipped[:4]) + (" …" if len(img_unshipped) > 4 else "")
+             + " (extract-for-swiftui.py 재실행으로 동반)")
     line(trunc == 0, f"절단 마커(...): {trunc}개" + (" — depth 부족, 해당 id 만 재추출 필요" if trunc else ""))
     line(not bad_icons, f"미지원 아이콘 라이브러리: {bad_icons}" if bad_icons else "아이콘 라이브러리: 전부 지원됨")
     # 아이콘 크기 규격 — iconsize-* 토큰 값 밖의 정사각 크기를 잡는다.
