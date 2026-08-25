@@ -112,6 +112,17 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
 
 **3. 아이콘 = Pencil PDF 벡터** (5절). 사진(래스터)과 달리 아이콘은 벡터라 PDF. 혼동 주의.
 
+**4. 네비 헤더·하단 탭바 = 시스템 컨트롤. (커스텀으로 그리지 않는다)**
+- `context: "native-substitute:ios"` 노드(`Navigation Header` · `Navigation Large Title` ·
+  `Bottom Tab Bar`)는 **디자인대로 그리지 않는다** — `NavigationStack` 툴바(`.navigationTitle`
+  + `.navigationBarTitleDisplayMode(.inline)`, **Large Title 은 `.large`**) · `TabView` 기본
+  탭바로 대체 (2절 표 참조).
+- 시각 차이(52pt 헤더·알약 탭바)는 **감수하기로 합의된 결정**이다(피드백 4). 다른 플랫폼은
+  디자인대로 그린다 — 이 규칙은 iOS 전용.
+- ※ 생성 AI 가 디자인의 52pt 헤더·알약 탭바를 보면 습관적으로 커스텀 뷰를 만든다(실측 근거로
+  정당화하면서) — **만들지 마라.** DS 카탈로그에 `DSNavigationHeader`/`DSBottomTabBar` 가
+  보여도 화면 조립엔 쓰지 않는다(카탈로그 미러 전용).
+
 ## 3) 토큰(변수) → Color / 상수
 
 `variables`는 `{themes:{mode:[light,dark]}, variables:{name:{type, value:[{theme,value}]}}}` 구조.
