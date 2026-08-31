@@ -123,6 +123,16 @@ python3 extract-for-swiftui.py --data ../초코로드/export                    
   정당화하면서) — **만들지 마라.** DS 카탈로그에 `DSNavigationHeader`/`DSBottomTabBar` 가
   보여도 화면 조립엔 쓰지 않는다(카탈로그 미러 전용).
 
+**5. 마스터의 `padding`·고정 `height` = 컴포넌트 자신의 기하. (카탈로그 눌림값과 구분하라)**
+- 카탈로그에서 보이는 **폭**만 `fill_container` 가 카탈로그 프레임 안에서 눌린 배치값일 수
+  있다 — 폭과 나머지 기하를 같은 이유로 싸잡아 버리지 말 것. `padding` 과 고정 `height` 는
+  화면 인스턴스에서도 그대로 유지되는 컴포넌트 기하다.
+- 고정 `height` 는 SwiftUI 로 옮길 때 세로 탐욕(`maxHeight: .infinity` 전파) 없이
+  `minHeight`(Dynamic Type 여유) 또는 `height` 로 받을 것 — 카탈로그 프리뷰는 높이가 눌려
+  있어 탐욕을 못 잡는다.
+- ※ 실측 근거(피드백 15): `Tab Bar` 마스터의 `h: 44`·`pad: [0, $spacing-24]` 를 카탈로그
+  배치값으로 오판해 높이는 탐욕으로, 패딩은 제거로 접었다가 화면 조립에서 둘 다 되돌렸다.
+
 ## 3) 토큰(변수) → Color / 상수
 
 `variables`는 `{themes:{mode:[light,dark]}, variables:{name:{type, value:[{theme,value}]}}}` 구조.

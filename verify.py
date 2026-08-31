@@ -543,6 +543,34 @@ def main():
         line(True, f"마스터 정본: 인스턴스가 전부 덮는 노드 없음 "
                    f"(검사 {len(seen_inst)}곳 · 의도된 예외 {len(MASTER_OVERRIDE_OK)}곳 제외)")
 
+    # 수작업 복제 의심 — 마스터와 똑같이 생긴 frame 을 화면에 직접 그리면 위의 인스턴스 그물
+    # (덮음/변형 축)에 하나도 안 걸린다. (실측: Duplicate Notice Popup 카드가 Popup Dialog 를
+    # 통째로 복제해 마스터에 없는 요소까지 품고 있었다 — 피드백 15)
+    # 오탐을 줄이려고 좁게 본다: 스타일 6필드(fill·cornerRadius·padding·gap·layout·alignItems)를
+    # **모두 가진** 마스터만 대상으로, 화면의 비-ref frame 이 6필드 전부 같으면 경고.
+    STYLE_KEYS = ("fill", "cornerRadius", "padding", "gap", "layout", "alignItems")
+    full_style = {}           # 스타일지문(JSON) -> 마스터명
+    for c in comp_by_id.values():
+        if all(k in c for k in STYLE_KEYS):
+            full_style[json.dumps([c[k] for k in STYLE_KEYS], sort_keys=True)] = c.get("name")
+    clones = []
+    def scan_clone(n, top):
+        if isinstance(n, dict):
+            if n.get("type") == "frame" and not n.get("reusable") and all(k in n for k in STYLE_KEYS):
+                m = full_style.get(json.dumps([n[k] for k in STYLE_KEYS], sort_keys=True))
+                if m:
+                    clones.append(f"{top}/{n.get('name') or n.get('id')} ≈ 마스터 {m}")
+            for ch in n.get("children") or []:
+                scan_clone(ch, top)
+    for s in nodes:
+        if not is_catalog(s) and not s.get("reusable"):
+            for ch in s.get("children") or []:
+                scan_clone(ch, s.get("name") or s.get("id"))
+    warn(not clones, f"수작업 복제 의심 {len(clones)}곳 — 마스터와 스타일 6필드가 전부 같은 "
+                     f"비인스턴스 frame. 인스턴스+오버라이드로 교체를 검토: " + " · ".join(clones))
+    if not clones and full_style:
+        line(True, f"수작업 복제 없음 (6필드 완비 마스터 {len(full_style)}종 기준)")
+
     line(not undefined_vars, f"정의 안 된 변수 참조: {undefined_vars}" if undefined_vars else "변수 참조: 전부 정의됨")
     line(not typo_type_bad,
          "타이포 변수 타입: fontFamily/fontWeight=string · fontSize/lineHeight/letterSpacing=number 일치"
